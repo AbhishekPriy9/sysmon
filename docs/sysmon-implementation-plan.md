@@ -612,7 +612,7 @@ pub fn scan_processes(
         .collect();
 
     let mut out = Vec::new();
-    for pid in live {
+    for pid in &live {
         let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;
         };
@@ -620,7 +620,7 @@ pub fn scan_processes(
             continue;
         };
         let ticks = utime.saturating_add(stime);
-        let cpu_pct = match prev.get(&pid) {
+        let cpu_pct = match prev.get(pid) {
             Some(p) => process_cpu_percent(*p, ticks, dt_sec, clk_tck),
             None => 0.0,
         };
@@ -633,8 +633,8 @@ pub fn scan_processes(
         } else {
             rss_kb as f64 / total_ram_kb as f64 * 100.0
         };
-        out.push(ProcRow { pid, name, cpu_pct, mem_pct });
-        prev.insert(pid, ticks);
+        out.push(ProcRow { pid: *pid, name, cpu_pct, mem_pct });
+        prev.insert(*pid, ticks);
     }
 
     prev.retain(|pid, _| live.contains(pid));
