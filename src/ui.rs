@@ -86,7 +86,7 @@ impl Ui {
         self.mem_bar.set_fraction(frac.clamp(0.0, 1.0));
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
         self.mem_text.set_text(&format!(
-            "Used {} / {}  ·  Swap {} / {}  ·  Zram {}",
+            "Used {} / {}\nSwap {} / {}\nZram {}",
             human_kb(used),
             human_kb(s.mem.total_kb),
             human_kb(swap_used),
@@ -114,8 +114,8 @@ impl Ui {
             for a in apps {
                 let it = store.append();
                 store.set_value(&it, 0, &a.name.to_value());
-                store.set_value(&it, 1, &round1(a.cpu_pct).to_value());
-                store.set_value(&it, 2, &round1(a.mem_pct).to_value());
+                store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
+                store.set_value(&it, 2, &(a.mem_pct.round() as u32).to_value());
                 store.set_value(&it, 3, &a.proc_count.to_value());
             }
         } else {
@@ -123,8 +123,8 @@ impl Ui {
                 let it = store.append();
                 store.set_value(&it, 0, &p.name.to_value());
                 store.set_value(&it, 1, &p.pid.to_value());
-                store.set_value(&it, 2, &round1(p.cpu_pct).to_value());
-                store.set_value(&it, 3, &round1(p.mem_pct).to_value());
+                store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
+                store.set_value(&it, 3, &(p.mem_pct.round() as u32).to_value());
             }
         }
     }
@@ -138,10 +138,6 @@ fn human_bps(bps: u64) -> String {
     } else {
         format!("{bps} B/s")
     }
-}
-
-fn round1(x: f64) -> f64 {
-    (x * 10.0).round() / 10.0
 }
 
 fn human_kb(kb: u64) -> String {
@@ -165,7 +161,7 @@ fn card(title: &str) -> (adw::PreferencesGroup, gtk4::Box) {
 }
 
 fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::F64, glib::Type::F64, glib::Type::U32]);
+    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::U32]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("App", 0, false),
@@ -193,7 +189,7 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
 }
 
 fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::F64, glib::Type::F64]);
+    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::U32]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("Name", 0, false),
