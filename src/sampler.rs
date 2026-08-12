@@ -221,4 +221,17 @@ mod tests {
         assert!(snap.mem.total_kb > 0);
         assert!(!snap.procs.is_empty());
     }
+
+    #[test]
+    fn rapl_energy_files_are_world_readable() {
+        for p in [
+            "/sys/class/powercap/intel-rapl:0/energy_uj",
+            "/sys/class/powercap/intel-rapl:0:0/energy_uj",
+        ] {
+            assert!(
+                crate::read::read_file(p).is_some(),
+                "RAPL file not readable — run the udev rule setup in this task: {p}"
+            );
+        }
+    }
 }
