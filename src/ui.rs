@@ -18,7 +18,8 @@ struct Ui {
     rapl_hint: gtk4::Label,
     bat_bar: ProgressBar,
     bat_health: gtk4::Label,
-    bat_watts: gtk4::Label,
+    bat_charge: gtk4::Label,
+    bat_discharge: gtk4::Label,
     mem_bar: ProgressBar,
     mem_text: gtk4::Label,
     net_down: gtk4::Label,
@@ -53,18 +54,24 @@ impl Ui {
             .map(|t| format!("{t:.0} °C"))
             .unwrap_or_else(|| "—".into());
         self.cpu_summary
-            .set_text(&format!("core {cw}  ·  pkg {pw}  ·  {t}"));
+            .set_text(&format!("Core {cw}  ·  Pkg {pw}  ·  {t}"));
         self.rapl_hint.set_visible(s.cpu.pkg_watts.is_none());
 
         if let Some(b) = &s.battery {
             self.bat_bar.set_fraction((b.charge_pct / 100.0).clamp(0.0, 1.0));
-            self.bat_health.set_text(&format!("health {:.0}%", b.health_pct));
-            self.bat_watts
-                .set_text(&format!("{} ({:.1} W)", b.status, b.watts));
+            self.bat_health.set_text(&format!("Health {:.0}%", b.health_pct));
+            let charging = b.status.starts_with("Charging");
+            let discharging = b.status.starts_with("Discharging");
+            let charge_w = if charging { b.watts.abs() } else { 0.0 };
+            let discharge_w = if discharging { b.watts.abs() } else { 0.0 };
+            self.bat_charge.set_text(&format!("Charging: {charge_w:.1} W"));
+            self.bat_discharge
+                .set_text(&format!("Discharging: {discharge_w:.1} W"));
         } else {
             self.bat_bar.set_fraction(0.0);
-            self.bat_health.set_text("no battery");
-            self.bat_watts.set_text("");
+            self.bat_health.set_text("No battery");
+            self.bat_charge.set_text("Charging: —");
+            self.bat_discharge.set_text("Discharging: —");
         }
 
         let used = s.mem.total_kb.saturating_sub(s.mem.avail_kb);
@@ -76,7 +83,7 @@ impl Ui {
         self.mem_bar.set_fraction(frac.clamp(0.0, 1.0));
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
         self.mem_text.set_text(&format!(
-            "used {:.1} GB / {:.1} GB  ·  swap {:.1} / {:.1} GB  ·  zram {:.0} MB",
+            "Used {:.1} GB / {:.1} GB  ·  Swap {:.1} / {:.1} GB  ·  Zram {:.0} MB",
             used as f64 / 1e6,
             s.mem.total_kb as f64 / 1e6,
             swap_used as f64 / 1e6,
@@ -201,7 +208,7 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
 pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
-        .title("sysmon")
+        .title("Sysmon")
         .default_width(480)
         .default_height(640)
         .build();
@@ -214,7 +221,12 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     root.set_margin_start(12);
     root.set_margin_end(12);
     scroller.set_child(Some(&root));
-    window.set_content(Some(&scroller));
+
+    let header = adw::HeaderBar::new();
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    content.append(&header);
+    content.append(&scroller);
+    window.set_content(Some(&content));
 
     // CPU card
     let (cg, cbox) = card("CPU");
@@ -225,7 +237,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let mut core_freq = Vec::new();
     for i in 0..8 {
         let v = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
-        let name = gtk4::Label::new(Some(&format!("C{i}")));
+        let name = gtk4::Label::new(Some(&format!("CPU{i}")));
         name.set_xalign(0.0);
         let bar = ProgressBar::new();
         bar.set_fraction(0.0);
@@ -234,7 +246,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         v.append(&name);
         v.append(&bar);
         v.append(&freq);
-        grid.attach(&v, i % 4, i / 4, 1, 1);
+        grid.attach(&v, i % 2, i / 2, 1, 1);
         core_load.push(bar);
         core_freq.push(freq);
     }
@@ -257,9 +269,12 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let bat_health = gtk4::Label::new(Some("—"));
     bat_health.set_xalign(0.0);
     bbox.append(&bat_health);
-    let bat_watts = gtk4::Label::new(Some("—"));
-    bat_watts.set_xalign(0.0);
-    bbox.append(&bat_watts);
+    let bat_charge = gtk4::Label::new(Some("Charging: —"));
+    bat_charge.set_xalign(0.0);
+    bbox.append(&bat_charge);
+    let bat_discharge = gtk4::Label::new(Some("Discharging: —"));
+    bat_discharge.set_xalign(0.0);
+    bbox.append(&bat_discharge);
     root.append(&bg);
 
     // Memory card
@@ -291,6 +306,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let (procs_store, procs_view) = build_procs_table();
     stack.add_titled(&apps_view, Some("apps"), "Apps");
     stack.add_titled(&procs_view, Some("procs"), "Processes");
+    pbox.append(&stack);
     root.append(&pg);
 
     let ui = Rc::new(Ui {
@@ -300,7 +316,8 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         rapl_hint,
         bat_bar,
         bat_health,
-        bat_watts,
+        bat_charge,
+        bat_discharge,
         mem_bar,
         mem_text,
         net_down,
