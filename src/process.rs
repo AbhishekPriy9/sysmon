@@ -43,7 +43,7 @@ pub fn scan_processes(
         } else {
             rss_kb as f64 / total_ram_kb as f64 * 100.0
         };
-        out.push(ProcRow { pid: *pid, name, cpu_pct, mem_pct });
+        out.push(ProcRow { pid: *pid, name, cpu_pct, mem_pct, rss_kb });
         prev.insert(*pid, ticks);
     }
 
@@ -53,19 +53,21 @@ pub fn scan_processes(
 }
 
 pub fn group_apps(procs: &[ProcRow]) -> Vec<AppRow> {
-    let mut map: HashMap<&str, (f64, f64, u32)> = HashMap::new();
+    let mut map: HashMap<&str, (f64, f64, u64, u32)> = HashMap::new();
     for p in procs {
-        let e = map.entry(p.name.as_str()).or_insert((0.0, 0.0, 0));
+        let e = map.entry(p.name.as_str()).or_insert((0.0, 0.0, 0, 0));
         e.0 += p.cpu_pct;
         e.1 += p.mem_pct;
-        e.2 += 1;
+        e.2 += p.rss_kb;
+        e.3 += 1;
     }
     let mut rows: Vec<AppRow> = map
         .into_iter()
-        .map(|(name, (cpu, mem, count))| AppRow {
+        .map(|(name, (cpu, mem, rss, count))| AppRow {
             name: name.to_string(),
             cpu_pct: cpu,
             mem_pct: mem,
+            rss_kb: rss,
             proc_count: count,
         })
         .collect();
@@ -80,15 +82,16 @@ mod tests {
     #[test]
     fn group_apps_aggregates_and_sorts_by_cpu() {
         let procs = vec![
-            ProcRow { pid: 1, name: "chrome".into(), cpu_pct: 5.0, mem_pct: 1.0 },
-            ProcRow { pid: 2, name: "chrome".into(), cpu_pct: 7.0, mem_pct: 2.0 },
-            ProcRow { pid: 3, name: "code".into(), cpu_pct: 3.0, mem_pct: 0.5 },
+            ProcRow { pid: 1, name: "chrome".into(), cpu_pct: 5.0, mem_pct: 1.0, rss_kb: 100 },
+            ProcRow { pid: 2, name: "chrome".into(), cpu_pct: 7.0, mem_pct: 2.0, rss_kb: 200 },
+            ProcRow { pid: 3, name: "code".into(), cpu_pct: 3.0, mem_pct: 0.5, rss_kb: 50 },
         ];
         let apps = group_apps(&procs);
         assert_eq!(apps.len(), 2);
         assert_eq!(apps[0].name, "chrome");
         assert!((apps[0].cpu_pct - 12.0).abs() < 1e-9);
         assert!((apps[0].mem_pct - 3.0).abs() < 1e-9);
+        assert_eq!(apps[0].rss_kb, 300);
         assert_eq!(apps[0].proc_count, 2);
         assert_eq!(apps[1].name, "code");
     }

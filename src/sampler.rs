@@ -77,13 +77,17 @@ impl Sampler {
         let mem = self.read_memory();
         let net = self.read_net(dt);
 
-        let procs = scan_processes(
+        let mut procs = scan_processes(
             &mut self.prev_proc,
             dt,
             self.clk_tck,
             self.page_size_kb,
             mem.total_kb,
         );
+        let cores_f = self.ncores as f64;
+        for p in &mut procs {
+            p.cpu_pct = if cores_f > 0.0 { p.cpu_pct / cores_f } else { 0.0 };
+        }
         let apps = group_apps(&procs);
 
         Snapshot {

@@ -115,7 +115,7 @@ impl Ui {
                 let it = store.append();
                 store.set_value(&it, 0, &a.name.to_value());
                 store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
-                store.set_value(&it, 2, &(a.mem_pct.round() as u32).to_value());
+                store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
                 store.set_value(&it, 3, &a.proc_count.to_value());
             }
         } else {
@@ -124,7 +124,7 @@ impl Ui {
                 store.set_value(&it, 0, &p.name.to_value());
                 store.set_value(&it, 1, &p.pid.to_value());
                 store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
-                store.set_value(&it, 3, &(p.mem_pct.round() as u32).to_value());
+                store.set_value(&it, 3, &human_kb(p.rss_kb).to_value());
             }
         }
     }
@@ -161,13 +161,13 @@ fn card(title: &str) -> (adw::PreferencesGroup, gtk4::Box) {
 }
 
 fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::U32]);
+    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::STRING, glib::Type::U32]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("App", 0, false),
         ("CPU %", 1, true),
-        ("MEM %", 2, true),
-        ("Procs", 3, false),
+        ("MEM", 2, false),
+        ("Procs", 3, true),
     ];
     for (title, idx, numeric) in cols {
         let col = gtk4::TreeViewColumn::new();
@@ -189,13 +189,13 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
 }
 
 fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::U32]);
+    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::STRING]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("Name", 0, false),
-        ("PID", 1, false),
+        ("PID", 1, true),
         ("CPU %", 2, true),
-        ("MEM %", 3, true),
+        ("MEM", 3, false),
     ];
     for (title, idx, numeric) in cols {
         let col = gtk4::TreeViewColumn::new();

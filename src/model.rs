@@ -44,11 +44,13 @@ pub struct ProcRow {
     pub name: String,
     pub cpu_pct: f64,
     pub mem_pct: f64,
+    pub rss_kb: u64,
 }
 
 pub struct AppRow {
     pub name: String,
     pub cpu_pct: f64,
     pub mem_pct: f64,
+    pub rss_kb: u64,
     pub proc_count: u32,
 }
