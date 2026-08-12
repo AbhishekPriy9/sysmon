@@ -711,7 +711,7 @@ pub mod sampler;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::model::{AppRow, Battery, Core, Cpu, Memory, Net, ProcRow, Snapshot};
+use crate::model::{Battery, Core, Cpu, Memory, Net, Snapshot};
 use crate::process::{group_apps, scan_processes};
 use crate::read::{
     battery_watts, health_pct, load_percent, net_rate, parse_cpu_line, parse_meminfo,
@@ -776,7 +776,7 @@ impl Sampler {
         let dt = now.duration_since(self.last).as_secs_f64();
         self.last = now;
 
-        let cores = self.sample_cores(dt);
+        let cores = self.sample_cores();
         let pkg_watts = rapl_sample(RAPL_PKG, &mut self.prev_rapl_pkg, self.rapl_max, dt);
         let core_watts = rapl_sample(RAPL_CORE, &mut self.prev_rapl_core, self.rapl_max, dt);
         let temp_c = read_file("/sys/class/thermal/thermal_zone6/temp")
@@ -806,7 +806,7 @@ impl Sampler {
         }
     }
 
-    fn sample_cores(&mut self, dt: f64) -> Vec<Core> {
+    fn sample_cores(&mut self) -> Vec<Core> {
         let stat = read_file("/proc/stat").unwrap_or_default();
         let mut cores = Vec::with_capacity(self.ncores);
         for i in 0..self.ncores {
@@ -837,11 +837,11 @@ impl Sampler {
         let base = "/sys/class/power_supply/BAT0";
         let status = read_file(&format!("{base}/status"))?.trim().to_string();
         let charge_pct = read_file(&format!("{base}/capacity"))
-            .and_then(|s| s.trim().parse().ok())?;
+            .and_then(|s| s.trim().parse::<u64>().ok())?;
         let full = read_file(&format!("{base}/charge_full"))
-            .and_then(|s| s.trim().parse().ok())?;
+            .and_then(|s| s.trim().parse::<u64>().ok())?;
         let design = read_file(&format!("{base}/charge_full_design"))
-            .and_then(|s| s.trim().parse().ok())?;
+            .and_then(|s| s.trim().parse::<u64>().ok())?;
         let current_now = read_file(&format!("{base}/current_now"))
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
