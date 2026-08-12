@@ -43,6 +43,24 @@ Wrap the Battery, Memory, and Network cards in a second `gtk::FlowBox`:
 Narrow window: cards stack full-width. Wide window: cards sit side-by-side
 (3-across).
 
+### Hover tooltips
+
+Abbreviated terms get a tooltip explaining what they mean, using
+`set_tooltip_text`:
+
+- Split the CPU summary into three labels — `Core X W`, `Pkg Y W`,
+  `Temp Z °C` — each with its own tooltip:
+  - Core: "Combined power draw of the CPU cores (RAPL core domain)"
+  - Pkg: "Total CPU package power, incl. cores, cache, and GPU (RAPL
+    package domain)"
+  - Temp: "CPU package temperature"
+- Per-core labels: "CPU load % and current clock frequency (MHz)"
+- Battery: Health → "Battery capacity vs. its design capacity",
+  Charging → "Current charging power draw", Discharging → "Current
+  discharging power draw"
+- Memory text: "RAM in use, swap usage, and zram compressed swap size"
+- Network labels: ↑ → "Download rate", ↓ → "Upload rate"
+
 ### Unchanged
 
 - Header toolbar (`adw::ToolbarView`)
@@ -51,10 +69,13 @@ Narrow window: cards stack full-width. Wide window: cards sit side-by-side
 
 ## Files changed
 
-- `src/ui.rs` — swap the CPU grid and stat-card layout for FlowBoxes.
+- `src/ui.rs` — swap the CPU grid and stat-card layout for FlowBoxes,
+  split the CPU summary into labeled terms, add hover tooltips.
 
 ## Testing
 
 - `cargo build` and `cargo test` (existing 17 tests) still pass.
 - Manual: resize the window; CPU cores and stat cards should reflow into
   more columns when widened and stack when narrowed.
+- Manual: hover over Core/Pkg/Temp, battery, memory, and network labels to
+  confirm tooltips appear.
