@@ -314,7 +314,7 @@ mod tests {
     fn rapl_watts_plain_and_wrap() {
         assert!((rapl_watts(10_000_000, 20_000_000, 100_000_000_000, 1.0) - 10.0).abs() < 1e-9);
         let w = rapl_watts(90_000_000_000, 5_000_000_000, 100_000_000_000, 1.0);
-        assert!((w - 15.0).abs() < 1e-9);
+        assert!((w - 15000.0).abs() < 1e-9);
     }
 
     #[test]
@@ -448,8 +448,12 @@ pub fn net_rate(prev: u64, cur: u64, dt_sec: f64) -> u64 {
 }
 
 pub fn parse_proc_stat(line: &str) -> Option<(String, u64, u64)> {
+    let open = line.find('(')?;
     let close = line.rfind(')')?;
-    let name = line[..close].rsplit_once('(')?.1.to_string();
+    if close <= open {
+        return None;
+    }
+    let name = line[open + 1..close].to_string();
     let rest: Vec<&str> = line[close + 1..].split_whitespace().collect();
     if rest.len() < 13 {
         return None;
