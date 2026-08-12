@@ -200,8 +200,7 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
     ]);
     let view = gtk4::TreeView::with_model(&store);
     view.set_headers_clickable(true);
-    view.set_grid_lines(gtk4::TreeViewGridLines::Horizontal);
-    view.set_fixed_height_mode(true);
+    view.set_grid_lines(gtk4::TreeViewGridLines::Both);
     add_text_column(&view, "App", 0, 0, false, true, 180);
     add_text_column(&view, "CPU %", 1, 1, true, false, 70);
     add_text_column(&view, "MEM", 2, 4, false, false, 100);
@@ -224,8 +223,7 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
     ]);
     let view = gtk4::TreeView::with_model(&store);
     view.set_headers_clickable(true);
-    view.set_grid_lines(gtk4::TreeViewGridLines::Horizontal);
-    view.set_fixed_height_mode(true);
+    view.set_grid_lines(gtk4::TreeViewGridLines::Both);
     add_text_column(&view, "Name", 0, 0, false, true, 180);
     add_text_column(&view, "PID", 1, 1, true, false, 80);
     add_text_column(&view, "CPU %", 2, 2, true, false, 70);
