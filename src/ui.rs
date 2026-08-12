@@ -56,7 +56,7 @@ impl Ui {
             .map(|t| format!("{t:.0} °C"))
             .unwrap_or_else(|| "—".into());
         self.cpu_core.set_text(&format!("Core {cw}"));
-        self.cpu_pkg.set_text(&format!("Pkg {pw}"));
+        self.cpu_pkg.set_text(&format!("PKG {pw}"));
         self.cpu_temp.set_text(&format!("{t}"));
         self.rapl_hint.set_visible(s.cpu.pkg_watts.is_none());
 
@@ -247,7 +247,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let (cg, cbox) = card("CPU");
     let flow = gtk4::FlowBox::new();
     flow.set_min_children_per_line(1);
-    flow.set_max_children_per_line(8);
+    flow.set_max_children_per_line(4);
     flow.set_homogeneous(true);
     flow.set_selection_mode(gtk4::SelectionMode::None);
     flow.set_activate_on_single_click(false);
@@ -335,20 +335,17 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     net_up.set_tooltip_text(Some("Upload rate"));
     nbox.append(&net_up);
 
-    // Stat cards reflow side-by-side when the window is wide
-    let stat_flow = gtk4::FlowBox::new();
-    stat_flow.set_min_children_per_line(1);
-    stat_flow.set_max_children_per_line(3);
-    stat_flow.set_homogeneous(true);
-    stat_flow.set_selection_mode(gtk4::SelectionMode::None);
-    stat_flow.set_activate_on_single_click(false);
-    bg.set_size_request(320, -1);
-    mg.set_size_request(320, -1);
-    ng.set_size_request(320, -1);
-    stat_flow.append(&bg);
-    stat_flow.append(&mg);
-    stat_flow.append(&ng);
-    root.append(&stat_flow);
+    // Stat cards in a fixed 2-column grid; Network spans the full second row
+    let stat_grid = gtk4::Grid::new();
+    stat_grid.set_column_spacing(12);
+    stat_grid.set_row_spacing(12);
+    bg.set_hexpand(true);
+    mg.set_hexpand(true);
+    ng.set_hexpand(true);
+    stat_grid.attach(&bg, 0, 0, 1, 1);
+    stat_grid.attach(&mg, 1, 0, 1, 1);
+    stat_grid.attach(&ng, 0, 1, 2, 1);
+    root.append(&stat_grid);
 
     // Processes card
     let (pg, pbox) = card("Processes");
