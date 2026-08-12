@@ -162,6 +162,34 @@ fn card(title: &str) -> (adw::PreferencesGroup, gtk4::Box) {
     (group, inner)
 }
 
+fn add_text_column(
+    view: &gtk4::TreeView,
+    title: &str,
+    model_idx: i32,
+    sort_idx: i32,
+    numeric: bool,
+    expand: bool,
+    min_width: i32,
+) {
+    let col = gtk4::TreeViewColumn::new();
+    col.set_title(title);
+    let cell = gtk4::CellRendererText::new();
+    cell.set_padding(10, 8);
+    if numeric {
+        cell.set_xalign(1.0);
+    } else {
+        cell.set_xalign(0.0);
+        cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    }
+    col.pack_start(&cell, true);
+    col.add_attribute(&cell, "text", model_idx);
+    col.set_sort_column_id(sort_idx);
+    col.set_resizable(true);
+    col.set_expand(expand);
+    col.set_min_width(min_width);
+    view.append_column(&col);
+}
+
 fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
     let store = ListStore::new(&[
         glib::Type::STRING,
@@ -171,33 +199,18 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
         glib::Type::U64,
     ]);
     let view = gtk4::TreeView::with_model(&store);
-    let cols: [(&str, i32, bool); 4] = [
-        ("App", 0, false),
-        ("CPU %", 1, true),
-        ("MEM", 2, false),
-        ("Procs", 3, true),
-    ];
-    let mut tree_cols = Vec::new();
-    for (title, idx, numeric) in cols {
-        let col = gtk4::TreeViewColumn::new();
-        col.set_title(title);
-        let cell = gtk4::CellRendererText::new();
-        if numeric {
-            cell.set_xalign(1.0);
-        }
-        col.pack_start(&cell, true);
-        col.add_attribute(&cell, "text", idx);
-        view.append_column(&col);
-        tree_cols.push(col);
-    }
-    tree_cols[0].set_sort_column_id(0);
-    tree_cols[1].set_sort_column_id(1);
-    tree_cols[2].set_sort_column_id(4);
-    tree_cols[3].set_sort_column_id(3);
+    view.set_headers_clickable(true);
+    view.set_grid_lines(gtk4::TreeViewGridLines::Horizontal);
+    view.set_fixed_height_mode(true);
+    add_text_column(&view, "App", 0, 0, false, true, 180);
+    add_text_column(&view, "CPU %", 1, 1, true, false, 70);
+    add_text_column(&view, "MEM", 2, 4, false, false, 100);
+    add_text_column(&view, "Procs", 3, 3, true, false, 70);
     store.set_sort_column_id(gtk4::SortColumn::Index(1), gtk4::SortType::Descending);
     let sw = gtk4::ScrolledWindow::new();
+    sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
-    sw.set_height_request(280);
+    sw.set_height_request(300);
     (store, sw)
 }
 
@@ -210,33 +223,18 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
         glib::Type::U64,
     ]);
     let view = gtk4::TreeView::with_model(&store);
-    let cols: [(&str, i32, bool); 4] = [
-        ("Name", 0, false),
-        ("PID", 1, true),
-        ("CPU %", 2, true),
-        ("MEM", 3, false),
-    ];
-    let mut tree_cols = Vec::new();
-    for (title, idx, numeric) in cols {
-        let col = gtk4::TreeViewColumn::new();
-        col.set_title(title);
-        let cell = gtk4::CellRendererText::new();
-        if numeric {
-            cell.set_xalign(1.0);
-        }
-        col.pack_start(&cell, true);
-        col.add_attribute(&cell, "text", idx);
-        view.append_column(&col);
-        tree_cols.push(col);
-    }
-    tree_cols[0].set_sort_column_id(0);
-    tree_cols[1].set_sort_column_id(1);
-    tree_cols[2].set_sort_column_id(2);
-    tree_cols[3].set_sort_column_id(4);
+    view.set_headers_clickable(true);
+    view.set_grid_lines(gtk4::TreeViewGridLines::Horizontal);
+    view.set_fixed_height_mode(true);
+    add_text_column(&view, "Name", 0, 0, false, true, 180);
+    add_text_column(&view, "PID", 1, 1, true, false, 80);
+    add_text_column(&view, "CPU %", 2, 2, true, false, 70);
+    add_text_column(&view, "MEM", 3, 4, false, false, 100);
     store.set_sort_column_id(gtk4::SortColumn::Index(2), gtk4::SortType::Descending);
     let sw = gtk4::ScrolledWindow::new();
+    sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
-    sw.set_height_request(280);
+    sw.set_height_request(300);
     (store, sw)
 }
 
