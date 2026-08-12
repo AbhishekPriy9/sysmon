@@ -117,6 +117,7 @@ impl Ui {
                 store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
                 store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
                 store.set_value(&it, 3, &a.proc_count.to_value());
+                store.set_value(&it, 4, &a.rss_kb.to_value());
             }
         } else {
             for p in procs {
@@ -125,6 +126,7 @@ impl Ui {
                 store.set_value(&it, 1, &p.pid.to_value());
                 store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
                 store.set_value(&it, 3, &human_kb(p.rss_kb).to_value());
+                store.set_value(&it, 4, &p.rss_kb.to_value());
             }
         }
     }
@@ -161,7 +163,13 @@ fn card(title: &str) -> (adw::PreferencesGroup, gtk4::Box) {
 }
 
 fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::STRING, glib::Type::U32]);
+    let store = ListStore::new(&[
+        glib::Type::STRING,
+        glib::Type::U32,
+        glib::Type::STRING,
+        glib::Type::U32,
+        glib::Type::U64,
+    ]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("App", 0, false),
@@ -169,6 +177,7 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
         ("MEM", 2, false),
         ("Procs", 3, true),
     ];
+    let mut tree_cols = Vec::new();
     for (title, idx, numeric) in cols {
         let col = gtk4::TreeViewColumn::new();
         col.set_title(title);
@@ -178,9 +187,13 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
         }
         col.pack_start(&cell, true);
         col.add_attribute(&cell, "text", idx);
-        col.set_sort_column_id(idx);
         view.append_column(&col);
+        tree_cols.push(col);
     }
+    tree_cols[0].set_sort_column_id(0);
+    tree_cols[1].set_sort_column_id(1);
+    tree_cols[2].set_sort_column_id(4);
+    tree_cols[3].set_sort_column_id(3);
     store.set_sort_column_id(gtk4::SortColumn::Index(1), gtk4::SortType::Descending);
     let sw = gtk4::ScrolledWindow::new();
     sw.set_child(Some(&view));
@@ -189,7 +202,13 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
 }
 
 fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[glib::Type::STRING, glib::Type::U32, glib::Type::U32, glib::Type::STRING]);
+    let store = ListStore::new(&[
+        glib::Type::STRING,
+        glib::Type::U32,
+        glib::Type::U32,
+        glib::Type::STRING,
+        glib::Type::U64,
+    ]);
     let view = gtk4::TreeView::with_model(&store);
     let cols: [(&str, i32, bool); 4] = [
         ("Name", 0, false),
@@ -197,6 +216,7 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
         ("CPU %", 2, true),
         ("MEM", 3, false),
     ];
+    let mut tree_cols = Vec::new();
     for (title, idx, numeric) in cols {
         let col = gtk4::TreeViewColumn::new();
         col.set_title(title);
@@ -206,9 +226,13 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
         }
         col.pack_start(&cell, true);
         col.add_attribute(&cell, "text", idx);
-        col.set_sort_column_id(idx);
         view.append_column(&col);
+        tree_cols.push(col);
     }
+    tree_cols[0].set_sort_column_id(0);
+    tree_cols[1].set_sort_column_id(1);
+    tree_cols[2].set_sort_column_id(2);
+    tree_cols[3].set_sort_column_id(4);
     store.set_sort_column_id(gtk4::SortColumn::Index(2), gtk4::SortType::Descending);
     let sw = gtk4::ScrolledWindow::new();
     sw.set_child(Some(&view));
@@ -234,6 +258,26 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     scroller.set_child(Some(&root));
 
     let header = adw::HeaderBar::new();
+    let frozen = Rc::new(std::cell::Cell::new(false));
+    let freeze_btn = gtk4::ToggleButton::new();
+    freeze_btn.set_icon_name("media-playback-pause-symbolic");
+    freeze_btn.set_tooltip_text(Some("Freeze the live refresh"));
+    let frozen_btn = Rc::clone(&frozen);
+    freeze_btn.connect_toggled(move |b| {
+        let active = b.is_active();
+        frozen_btn.set(active);
+        b.set_icon_name(if active {
+            "media-playback-start-symbolic"
+        } else {
+            "media-playback-pause-symbolic"
+        });
+        b.set_tooltip_text(Some(if active {
+            "Resume the live refresh"
+        } else {
+            "Freeze the live refresh"
+        }));
+    });
+    header.pack_start(&freeze_btn);
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
     toolbar.set_content(Some(&scroller));
@@ -377,9 +421,12 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
 
     let (sender, receiver) = std::sync::mpsc::channel::<Snapshot>();
     let ui2 = Rc::clone(&ui);
+    let frozen_loop = Rc::clone(&frozen);
     glib::timeout_add_local(Duration::from_millis(250), move || {
         while let Ok(s) = receiver.try_recv() {
-            ui2.update(&s);
+            if !frozen_loop.get() {
+                ui2.update(&s);
+            }
         }
         glib::ControlFlow::Continue
     });
