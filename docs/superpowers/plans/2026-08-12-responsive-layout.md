@@ -136,6 +136,9 @@ In `src/ui.rs` inside `build()`, the three stat cards are currently built separa
     stat_flow.set_homogeneous(true);
     stat_flow.set_selection_mode(gtk4::SelectionMode::None);
     stat_flow.set_activate_on_single_click(false);
+    bg.set_size_request(320, -1);
+    mg.set_size_request(320, -1);
+    ng.set_size_request(320, -1);
     stat_flow.append(&bg);
     stat_flow.append(&mg);
     stat_flow.append(&ng);
@@ -144,25 +147,35 @@ In `src/ui.rs` inside `build()`, the three stat cards are currently built separa
 
 Do NOT move the widget-creation lines for the cards elsewhere — they stay where they are; only the `root.append` calls for `bg`/`mg`/`ng` are removed and replaced by the `stat_flow` block above. The Processes card section is unchanged.
 
-- [ ] **Step 3: Build**
+The 320px minimum width per card means ~2 cards fit per line at the default window width; up to 3-across when very wide; 1-across when narrow.
+
+- [ ] **Step 3: Widen the default window to 1.8x**
+
+In `build()`, the window builder currently has `.default_width(480)`. Change it to:
+
+```rust
+        .default_width(864)
+```
+
+- [ ] **Step 4: Build**
 
 Run: `cargo build`
 Expected: compiles with no errors or warnings.
 
-- [ ] **Step 4: Run tests**
+- [ ] **Step 5: Run tests**
 
 Run: `cargo test`
 Expected: all 17 tests pass.
 
-- [ ] **Step 5: Manual verification**
+- [ ] **Step 6: Manual verification**
 
 Run: `cargo run`
-Expected: window opens. Drag the window wider/narrower:
+Expected: window opens wider (864px). Drag the window wider/narrower:
 - CPU cores wrap into more columns as the window widens (1–8 per line).
-- Battery/Memory/Network cards stack full-width when narrow and sit side-by-side (up to 3-across) when wide.
+- Battery/Memory/Network cards stack full-width when narrow, 2-across at the default width, up to 3-across when very wide.
 - No content is clipped.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/ui.rs
@@ -337,4 +350,107 @@ Expected: CPU summary shows three separate terms — `Core …`, `Pkg …`, `Tem
 ```bash
 git add src/ui.rs
 git commit -m "feat: split cpu summary and add explanatory hover tooltips"
+```
+
+---
+
+### Task 3: Round table percentages and use adaptive memory units
+
+**Files:**
+- Modify: `src/ui.rs` (`Ui::update` memory text, `refill_table`, add helpers)
+
+**Interfaces:**
+- Consumes: `s.mem` fields (`used`, `total_kb`, `swap_used`, `swap_total_kb`, `zram_compressed_kb`), `AppRow`/`ProcRow` f64 fields.
+- Produces: helper `round1(x: f64) -> f64` and `human_kb(kb: u64) -> String` used only within `ui.rs`.
+
+- [ ] **Step 1: Add formatting helpers**
+
+At the end of `src/ui.rs`, next to `human_bps`, add:
+
+```rust
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+fn human_kb(kb: u64) -> String {
+    if kb < 1_000_000 {
+        format!("{:.0} MB", kb as f64 / 1024.0)
+    } else {
+        format!("{:.1} GB", kb as f64 / 1e6)
+    }
+}
+```
+
+- [ ] **Step 2: Use adaptive units in the memory text**
+
+In `Ui::update`, replace the `mem_text` block:
+
+```rust
+        self.mem_text.set_text(&format!(
+            "Used {:.1} GB / {:.1} GB  ·  Swap {:.1} / {:.1} GB  ·  Zram {:.0} MB",
+            used as f64 / 1e6,
+            s.mem.total_kb as f64 / 1e6,
+            swap_used as f64 / 1e6,
+            s.mem.swap_total_kb as f64 / 1e6,
+            s.mem.zram_compressed_kb as f64 / 1024.0,
+        ));
+```
+
+with:
+
+```rust
+        self.mem_text.set_text(&format!(
+            "Used {} / {}  ·  Swap {} / {}  ·  Zram {}",
+            human_kb(used),
+            human_kb(s.mem.total_kb),
+            human_kb(swap_used),
+            human_kb(s.mem.swap_total_kb),
+            human_kb(s.mem.zram_compressed_kb),
+        ));
+```
+
+- [ ] **Step 3: Round percentages in the apps and procs tables**
+
+In `refill_table`, round the four percentage columns to one decimal. Apps branch:
+
+```rust
+        if apps_view {
+            for a in apps {
+                let it = store.append();
+                store.set_value(&it, 0, &a.name.to_value());
+                store.set_value(&it, 1, &round1(a.cpu_pct).to_value());
+                store.set_value(&it, 2, &round1(a.mem_pct).to_value());
+                store.set_value(&it, 3, &a.proc_count.to_value());
+            }
+        } else {
+            for p in procs {
+                let it = store.append();
+                store.set_value(&it, 0, &p.name.to_value());
+                store.set_value(&it, 1, &p.pid.to_value());
+                store.set_value(&it, 2, &round1(p.cpu_pct).to_value());
+                store.set_value(&it, 3, &round1(p.mem_pct).to_value());
+            }
+        }
+```
+
+- [ ] **Step 4: Build**
+
+Run: `cargo build`
+Expected: compiles with no errors or warnings.
+
+- [ ] **Step 5: Run tests**
+
+Run: `cargo test`
+Expected: all 17 tests pass.
+
+- [ ] **Step 6: Manual verification**
+
+Run: `cargo run`
+Expected: the Apps and Processes tables show CPU/MEM percentages with one decimal (e.g. `12.3`, not `12.3456789`). The Memory card shows MB for values under 1 GB and GB above (e.g. `Used 5.2 GB / 15.7 GB`, `Zram 40 MB`).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/ui.rs
+git commit -m "feat: round table percentages and use adaptive memory units"
 ```
