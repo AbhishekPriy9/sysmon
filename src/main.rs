@@ -8,12 +8,7 @@ fn main() {
         .build();
 
     app.connect_activate(|app| {
-        let window = adw::ApplicationWindow::builder()
-            .application(app)
-            .title("sysmon")
-            .default_width(560)
-            .default_height(820)
-            .build();
+        let window = sysmon::ui::build(app);
         window.present();
     });
 
