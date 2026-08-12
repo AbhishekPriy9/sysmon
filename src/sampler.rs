@@ -138,10 +138,14 @@ impl Sampler {
         let voltage_now = read_file(&format!("{base}/voltage_now"))
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
+        let mut watts = battery_watts(current_now, voltage_now);
+        if status.starts_with("Charging") {
+            watts = -watts.abs();
+        }
         Some(Battery {
             charge_pct: charge_pct as f64,
             health_pct: health_pct(full, design),
-            watts: battery_watts(current_now, voltage_now),
+            watts,
             status,
         })
     }

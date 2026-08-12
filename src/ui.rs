@@ -34,7 +34,7 @@ impl Ui {
                 b.set_fraction((c.load / 100.0).clamp(0.0, 1.0));
             }
             if let Some(l) = self.core_freq.get(i) {
-                l.set_text(&format!("{} MHz", c.freq_mhz));
+                l.set_text(&format!("{:.0}% · {} MHz", c.load, c.freq_mhz));
             }
         }
         let pw = s
@@ -202,8 +202,8 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("sysmon")
-        .default_width(560)
-        .default_height(820)
+        .default_width(480)
+        .default_height(640)
         .build();
 
     let scroller = gtk4::ScrolledWindow::new();
