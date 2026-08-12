@@ -59,7 +59,7 @@ Abbreviated terms get a tooltip explaining what they mean, using
   Charging → "Current charging power draw", Discharging → "Current
   discharging power draw"
 - Memory text: "RAM in use, swap usage, and zram compressed swap size"
-- Network labels: ↑ → "Download rate", ↓ → "Upload rate"
+- Network labels: ↑ → "Upload rate", ↓ → "Download rate"
 
 ### Unchanged
 
