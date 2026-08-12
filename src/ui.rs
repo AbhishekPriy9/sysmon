@@ -14,7 +14,9 @@ use crate::sampler::Sampler;
 struct Ui {
     core_load: Vec<ProgressBar>,
     core_freq: Vec<gtk4::Label>,
-    cpu_summary: gtk4::Label,
+    cpu_core: gtk4::Label,
+    cpu_pkg: gtk4::Label,
+    cpu_temp: gtk4::Label,
     rapl_hint: gtk4::Label,
     bat_bar: ProgressBar,
     bat_health: gtk4::Label,
@@ -53,8 +55,9 @@ impl Ui {
             .temp_c
             .map(|t| format!("{t:.0} °C"))
             .unwrap_or_else(|| "—".into());
-        self.cpu_summary
-            .set_text(&format!("Core {cw}  ·  Pkg {pw}  ·  {t}"));
+        self.cpu_core.set_text(&format!("Core {cw}"));
+        self.cpu_pkg.set_text(&format!("Pkg {pw}"));
+        self.cpu_temp.set_text(&format!("{t}"));
         self.rapl_hint.set_visible(s.cpu.pkg_watts.is_none());
 
         if let Some(b) = &s.battery {
@@ -83,12 +86,12 @@ impl Ui {
         self.mem_bar.set_fraction(frac.clamp(0.0, 1.0));
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
         self.mem_text.set_text(&format!(
-            "Used {:.1} GB / {:.1} GB  ·  Swap {:.1} / {:.1} GB  ·  Zram {:.0} MB",
-            used as f64 / 1e6,
-            s.mem.total_kb as f64 / 1e6,
-            swap_used as f64 / 1e6,
-            s.mem.swap_total_kb as f64 / 1e6,
-            s.mem.zram_compressed_kb as f64 / 1024.0,
+            "Used {} / {}  ·  Swap {} / {}  ·  Zram {}",
+            human_kb(used),
+            human_kb(s.mem.total_kb),
+            human_kb(swap_used),
+            human_kb(s.mem.swap_total_kb),
+            human_kb(s.mem.zram_compressed_kb),
         ));
 
         self.net_up.set_text(&format!("↑ {}", human_bps(s.net.up_bps)));
@@ -111,8 +114,8 @@ impl Ui {
             for a in apps {
                 let it = store.append();
                 store.set_value(&it, 0, &a.name.to_value());
-                store.set_value(&it, 1, &a.cpu_pct.to_value());
-                store.set_value(&it, 2, &a.mem_pct.to_value());
+                store.set_value(&it, 1, &round1(a.cpu_pct).to_value());
+                store.set_value(&it, 2, &round1(a.mem_pct).to_value());
                 store.set_value(&it, 3, &a.proc_count.to_value());
             }
         } else {
@@ -120,8 +123,8 @@ impl Ui {
                 let it = store.append();
                 store.set_value(&it, 0, &p.name.to_value());
                 store.set_value(&it, 1, &p.pid.to_value());
-                store.set_value(&it, 2, &p.cpu_pct.to_value());
-                store.set_value(&it, 3, &p.mem_pct.to_value());
+                store.set_value(&it, 2, &round1(p.cpu_pct).to_value());
+                store.set_value(&it, 3, &round1(p.mem_pct).to_value());
             }
         }
     }
@@ -134,6 +137,18 @@ fn human_bps(bps: u64) -> String {
         format!("{:.1} KB/s", bps as f64 / 1e3)
     } else {
         format!("{bps} B/s")
+    }
+}
+
+fn round1(x: f64) -> f64 {
+    (x * 10.0).round() / 10.0
+}
+
+fn human_kb(kb: u64) -> String {
+    if kb < 1_000_000 {
+        format!("{:.0} MB", kb as f64 / 1024.0)
+    } else {
+        format!("{:.1} GB", kb as f64 / 1e6)
     }
 }
 
@@ -209,7 +224,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Sysmon")
-        .default_width(480)
+        .default_width(864)
         .default_height(640)
         .build();
 
@@ -223,37 +238,58 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     scroller.set_child(Some(&root));
 
     let header = adw::HeaderBar::new();
-    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    content.append(&header);
-    content.append(&scroller);
-    window.set_content(Some(&content));
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&scroller));
+    window.set_content(Some(&toolbar));
 
     // CPU card
     let (cg, cbox) = card("CPU");
-    let grid = gtk4::Grid::new();
-    grid.set_column_spacing(8);
-    grid.set_row_spacing(8);
+    let flow = gtk4::FlowBox::new();
+    flow.set_min_children_per_line(1);
+    flow.set_max_children_per_line(8);
+    flow.set_homogeneous(true);
+    flow.set_selection_mode(gtk4::SelectionMode::None);
+    flow.set_activate_on_single_click(false);
+    flow.set_hexpand(true);
     let mut core_load = Vec::new();
     let mut core_freq = Vec::new();
     for i in 0..8 {
         let v = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        v.set_size_request(170, -1);
         let name = gtk4::Label::new(Some(&format!("CPU{i}")));
         name.set_xalign(0.0);
         let bar = ProgressBar::new();
         bar.set_fraction(0.0);
         let freq = gtk4::Label::new(Some("—"));
         freq.set_xalign(0.0);
+        freq.set_tooltip_text(Some("CPU load % and current clock frequency (MHz)"));
         v.append(&name);
         v.append(&bar);
         v.append(&freq);
-        grid.attach(&v, i % 2, i / 2, 1, 1);
+        flow.append(&v);
         core_load.push(bar);
         core_freq.push(freq);
     }
-    cbox.append(&grid);
-    let summary = gtk4::Label::new(Some("—"));
-    summary.set_xalign(0.0);
-    cbox.append(&summary);
+    cbox.append(&flow);
+    let core_label = gtk4::Label::new(Some("—"));
+    core_label.set_xalign(0.0);
+    core_label.set_tooltip_text(Some(
+        "Combined power draw of the CPU cores (RAPL core domain)",
+    ));
+    let pkg_label = gtk4::Label::new(Some("—"));
+    pkg_label.set_xalign(0.0);
+    pkg_label.set_tooltip_text(Some(
+        "Total CPU package power, incl. cores, cache, and GPU (RAPL package domain)",
+    ));
+    let temp_label = gtk4::Label::new(Some("—"));
+    temp_label.set_xalign(0.0);
+    temp_label.set_tooltip_text(Some("CPU package temperature"));
+    let summary_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
+    summary_row.append(&core_label);
+    summary_row.append(&pkg_label);
+    summary_row.append(&temp_label);
+    cbox.append(&summary_row);
     let rapl_hint = gtk4::Label::new(Some(
         "RAPL not readable — run: sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap",
     ));
@@ -268,14 +304,16 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     bbox.append(&bat_bar);
     let bat_health = gtk4::Label::new(Some("—"));
     bat_health.set_xalign(0.0);
+    bat_health.set_tooltip_text(Some("Battery capacity vs. its design capacity"));
     bbox.append(&bat_health);
     let bat_charge = gtk4::Label::new(Some("Charging: —"));
     bat_charge.set_xalign(0.0);
+    bat_charge.set_tooltip_text(Some("Current charging power draw"));
     bbox.append(&bat_charge);
     let bat_discharge = gtk4::Label::new(Some("Discharging: —"));
     bat_discharge.set_xalign(0.0);
+    bat_discharge.set_tooltip_text(Some("Current discharging power draw"));
     bbox.append(&bat_discharge);
-    root.append(&bg);
 
     // Memory card
     let (mg, mbox) = card("Memory");
@@ -283,18 +321,34 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     mbox.append(&mem_bar);
     let mem_text = gtk4::Label::new(Some("—"));
     mem_text.set_xalign(0.0);
+    mem_text.set_tooltip_text(Some("RAM in use, swap usage, and zram compressed swap size"));
     mbox.append(&mem_text);
-    root.append(&mg);
 
     // Network card
     let (ng, nbox) = card("Network");
     let net_down = gtk4::Label::new(Some("↓ —"));
     net_down.set_xalign(0.0);
+    net_down.set_tooltip_text(Some("Download rate"));
     nbox.append(&net_down);
     let net_up = gtk4::Label::new(Some("↑ —"));
     net_up.set_xalign(0.0);
+    net_up.set_tooltip_text(Some("Upload rate"));
     nbox.append(&net_up);
-    root.append(&ng);
+
+    // Stat cards reflow side-by-side when the window is wide
+    let stat_flow = gtk4::FlowBox::new();
+    stat_flow.set_min_children_per_line(1);
+    stat_flow.set_max_children_per_line(3);
+    stat_flow.set_homogeneous(true);
+    stat_flow.set_selection_mode(gtk4::SelectionMode::None);
+    stat_flow.set_activate_on_single_click(false);
+    bg.set_size_request(320, -1);
+    mg.set_size_request(320, -1);
+    ng.set_size_request(320, -1);
+    stat_flow.append(&bg);
+    stat_flow.append(&mg);
+    stat_flow.append(&ng);
+    root.append(&stat_flow);
 
     // Processes card
     let (pg, pbox) = card("Processes");
@@ -312,7 +366,9 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let ui = Rc::new(Ui {
         core_load,
         core_freq,
-        cpu_summary: summary,
+        cpu_core: core_label,
+        cpu_pkg: pkg_label,
+        cpu_temp: temp_label,
         rapl_hint,
         bat_bar,
         bat_health,
