@@ -540,7 +540,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             "Source-available. Free to read/run/share verbatim; no modification and \
              redistribution, no re-labeling/re-branding, no commercial sale. See LICENSE.",
         );
-        d.set_website("https://github.com/example/sysmon");
+        d.set_website("https://github.com/AbhishekPriy9/sysmon");
         d.present(app_about.active_window().as_ref());
     });
     header.pack_end(&about_btn);

@@ -5,7 +5,7 @@ edition = "2024"
 description = "Live system monitor for CPU, battery, memory, network, and processes (GTK4/libadwaita)"
 authors = ["Sysmon authors"]
 license-file = "LICENSE"
-repository = "https://github.com/example/sysmon"
+repository = "https://github.com/AbhishekPriy9/sysmon"
 
 [dependencies]
 glib = "0.22.8"
