@@ -80,7 +80,7 @@ pub fn group_apps(procs: &[ProcRow]) -> Vec<AppRow> {
 }
 
 pub fn terminate(pid: u32) -> bool {
-    if pid == 0 || pid > i32::MAX as u32 {
+    if pid == 0 || pid == std::process::id() || pid > i32::MAX as u32 {
         return false;
     }
     unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
@@ -118,6 +118,7 @@ mod tests {
         assert!(!terminate(0));
         assert!(!terminate(3_000_000_000));
         assert!(!terminate(2_000_000_000));
+        assert!(!terminate(std::process::id()));
     }
 
     #[test]

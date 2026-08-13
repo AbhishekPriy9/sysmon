@@ -135,10 +135,11 @@ impl Ui {
 
         let w = self.mem_seg_bar.width();
         if t > 0 && w > 0 {
-            let avail_w = (w - 4).max(1) as f64;
-            let used_w = (avail_w * (used as f64 / t as f64)).round() as i32;
-            let cache_w = (avail_w * (cache as f64 / t as f64)).round() as i32;
-            let free_w = (avail_w as i32 - used_w - cache_w).max(0);
+            let avail_w = (w - 4).max(1) as i32;
+            let used_w = (avail_w as f64 * (used as f64 / t as f64)).round() as i32;
+            let cache_w = (avail_w as f64 * (cache as f64 / t as f64)).round() as i32;
+            let cache_w = cache_w.min((avail_w - used_w).max(0));
+            let free_w = (avail_w - used_w - cache_w).max(0);
             self.mem_seg_used.set_size_request(used_w, -1);
             self.mem_seg_cache.set_size_request(cache_w, -1);
             self.mem_seg_free.set_size_request(free_w, -1);
@@ -232,29 +233,30 @@ fn boxed_list() -> gtk4::ListBox {
     list
 }
 
-fn action_popover(
-    anchor: &impl IsA<gtk4::Widget>,
+fn present_action(
+    pop: &gtk4::Popover,
     label: &str,
     activate: impl Fn() + 'static,
 ) {
-    let pop = Rc::new(gtk4::Popover::new());
     let btn = gtk4::Button::with_label(label);
     btn.add_css_class("flat");
     btn.set_hexpand(true);
-    let pop2 = Rc::clone(&pop);
+    let weak = pop.downgrade();
     btn.connect_clicked(move |_| {
-        pop2.popdown();
+        if let Some(p) = weak.upgrade() {
+            p.popdown();
+        }
         activate();
     });
     let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     box_.append(&btn);
     pop.set_child(Some(&box_));
-    pop.set_parent(anchor);
     pop.present();
 }
 
 fn confirm_terminate(
     window: &impl IsA<gtk4::Window>,
+    toasts: adw::ToastOverlay,
     heading: &str,
     body: &str,
     mut pids: Vec<u32>,
@@ -271,8 +273,10 @@ fn confirm_terminate(
     dlg.set_close_response("cancel");
     dlg.connect_response(None, move |d, resp| {
         if resp == "end" {
-            for pid in &pids {
-                crate::process::terminate(*pid);
+            if pids.iter().any(|&pid| !crate::process::terminate(pid)) {
+                toasts.add_toast(adw::Toast::new(
+                    "Couldn't end process — it may have already exited",
+                ));
             }
         }
         d.close();
@@ -400,6 +404,8 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         .default_width(864)
         .default_height(640)
         .build();
+
+    let toast_overlay = adw::ToastOverlay::new();
 
     let header = adw::HeaderBar::new();
     let frozen = Rc::new(std::cell::Cell::new(false));
@@ -572,11 +578,16 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
 
     {
         let win = window.clone();
+        let toasts = toast_overlay.clone();
         let store = Rc::new(apps_store.clone());
         let view = apps_view.clone();
+        let pop = gtk4::Popover::new();
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
         gesture.connect_pressed(move |_, _, x, y| {
+            if pop.parent().is_none() {
+                pop.set_parent(&view);
+            }
             let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
                 return;
             };
@@ -585,21 +596,24 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             };
             view.selection().select_iter(&iter);
             let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
-            let pids: Vec<u32> = store
+            let own = std::process::id();
+            let targets: Vec<u32> = store
                 .get_value(&iter, 5)
                 .get::<String>()
                 .unwrap_or_default()
                 .split(',')
                 .filter_map(|s| s.parse().ok())
+                .filter(|&p| p != own)
                 .collect();
-            let heading = format!("Close app \"{name}\"?");
-            let body = format!("Its {} process(es) will be terminated.", pids.len());
             let win = win.clone();
-            let heading = heading.clone();
-            let body = body.clone();
-            let pids = pids.clone();
-            action_popover(&view, "Close App", move || {
-                confirm_terminate(&win, &heading, &body, pids.clone())
+            let toasts = toasts.clone();
+            present_action(&pop, "Close App", move || {
+                let heading = format!("Close app \"{name}\"?");
+                let body = format!(
+                    "Its {} process(es) will be terminated.",
+                    targets.len()
+                );
+                confirm_terminate(&win, toasts.clone(), &heading, &body, targets.clone())
             });
         });
         apps_view.add_controller(gesture);
@@ -607,11 +621,16 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
 
     {
         let win = window.clone();
+        let toasts = toast_overlay.clone();
         let store = Rc::new(procs_store.clone());
         let view = procs_view.clone();
+        let pop = gtk4::Popover::new();
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
         gesture.connect_pressed(move |_, _, x, y| {
+            if pop.parent().is_none() {
+                pop.set_parent(&view);
+            }
             let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
                 return;
             };
@@ -621,12 +640,12 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
             view.selection().select_iter(&iter);
             let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
             let pid: u32 = store.get_value(&iter, 1).get().unwrap_or_default();
-            let heading = format!("End process \"{name}\" (PID {pid})?");
-            let body = "The process will be terminated.";
             let win = win.clone();
-            let heading = heading.clone();
-            action_popover(&view, "End Process", move || {
-                confirm_terminate(&win, &heading, &body, vec![pid])
+            let toasts = toasts.clone();
+            present_action(&pop, "End Process", move || {
+                let heading = format!("End process \"{name}\" (PID {pid})?");
+                let body = "The process will be terminated.";
+                confirm_terminate(&win, toasts.clone(), &heading, &body, vec![pid])
             });
         });
         procs_view.add_controller(gesture);
@@ -673,7 +692,8 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     toolbar.add_top_bar(&header);
     toolbar.add_top_bar(&view_switcher);
     toolbar.set_content(Some(&scroller));
-    window.set_content(Some(&toolbar));
+    toast_overlay.set_child(Some(&toolbar));
+    window.set_content(Some(&toast_overlay));
 
     let ui = Rc::new(Ui {
         core_load,
