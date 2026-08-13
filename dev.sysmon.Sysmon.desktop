@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Sysmon
+Comment=Live system monitor for CPU, battery, memory, network, and processes
+Exec=sysmon
+Icon=dev.sysmon.Sysmon
+Terminal=false
+Type=Application
+Categories=System;Monitor;
+Keywords=system;monitor;cpu;memory;battery;network;process;

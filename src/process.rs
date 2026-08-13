@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use crate::model::{AppRow, ProcRow};
@@ -47,7 +47,8 @@ pub fn scan_processes(
         prev.insert(*pid, ticks);
     }
 
-    prev.retain(|pid, _| live.contains(pid));
+    let live_set: HashSet<u32> = live.into_iter().collect();
+    prev.retain(|pid, _| live_set.contains(pid));
     out.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
@@ -79,13 +80,6 @@ pub fn group_apps(procs: &[ProcRow]) -> Vec<AppRow> {
     rows
 }
 
-pub fn terminate(pid: u32) -> bool {
-    if pid == 0 || pid == std::process::id() || pid > i32::MAX as u32 {
-        return false;
-    }
-    unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,14 +105,6 @@ mod tests {
     #[test]
     fn group_apps_empty_input() {
         assert!(group_apps(&[]).is_empty());
-    }
-
-    #[test]
-    fn terminate_rejects_invalid_pids() {
-        assert!(!terminate(0));
-        assert!(!terminate(3_000_000_000));
-        assert!(!terminate(2_000_000_000));
-        assert!(!terminate(std::process::id()));
     }
 
     #[test]

@@ -1,8 +1,11 @@
-pub struct Snapshot {
+pub struct QuickSnapshot {
     pub cpu: Cpu,
     pub battery: Option<Battery>,
     pub mem: Memory,
     pub net: Net,
+}
+
+pub struct ProcSnapshot {
     pub apps: Vec<AppRow>,
     pub procs: Vec<ProcRow>,
 }
@@ -12,6 +15,9 @@ pub struct Cpu {
     pub pkg_watts: Option<f64>,
     pub core_watts: Option<f64>,
     pub temp_c: Option<f64>,
+    pub name: String,
+    pub max_freq_mhz: u64,
+    pub boost: Option<bool>,
 }
 
 pub struct Core {
@@ -24,6 +30,8 @@ pub struct Battery {
     pub health_pct: f64,
     pub watts: f64,
     pub status: String,
+    pub cycle_count: Option<u64>,
+    pub temp_c: Option<f64>,
 }
 
 pub struct Memory {
@@ -37,6 +45,14 @@ pub struct Memory {
 }
 
 pub struct Net {
+    pub down_bps: u64,
+    pub up_bps: u64,
+    pub ifaces: Vec<NetIface>,
+}
+
+pub struct NetIface {
+    pub name: String,
+    pub label: String,
     pub down_bps: u64,
     pub up_bps: u64,
 }

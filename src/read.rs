@@ -4,7 +4,7 @@ pub fn read_file(path: &str) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
+pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64, u64) {
     let mut total = 0;
     let mut free = 0;
     let mut avail = 0;
@@ -12,8 +12,6 @@ pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
     let mut cached = 0;
     let mut swap_total = 0;
     let mut swap_free = 0;
-    let mut zswap = 0;
-    let mut zswapped = 0;
     for line in s.lines() {
         let mut it = line.split_whitespace();
         let key = it.next().unwrap_or("");
@@ -26,12 +24,10 @@ pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
             "Cached:" => cached = val,
             "SwapTotal:" => swap_total = val,
             "SwapFree:" => swap_free = val,
-            "Zswap:" => zswap = val,
-            "Zswapped:" => zswapped = val,
             _ => {}
         }
     }
-    (total, free, avail, buffers, cached, swap_total, swap_free, zswap, zswapped)
+    (total, free, avail, buffers, cached, swap_total, swap_free)
 }
 
 pub fn parse_cpu_line(line: &str) -> Option<(u64, u64)> {
@@ -123,7 +119,7 @@ mod tests {
         let s = "MemTotal:       15755096 kB\nMemFree:         1234567 kB\nMemAvailable:    9876543 kB\nBuffers:         45678 kB\nCached:          789012 kB\nSwapTotal:       20775844 kB\nSwapFree:        19000000 kB\nZswap:           100 kB\nZswapped:        20 kB\n";
         assert_eq!(
             parse_meminfo(s),
-            (15755096, 1234567, 9876543, 45678, 789012, 20775844, 19000000, 100, 20)
+            (15755096, 1234567, 9876543, 45678, 789012, 20775844, 19000000)
         );
     }
 

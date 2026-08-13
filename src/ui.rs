@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::thread;
 use std::time::Duration;
@@ -5,11 +7,11 @@ use std::time::Duration;
 use libadwaita as adw;
 
 use gtk4::prelude::*;
-use gtk4::{glib, ListStore, ProgressBar};
+use gtk4::{glib, ListStore, ProgressBar, TreeIter};
 use libadwaita::prelude::*;
 
-use crate::model::Snapshot;
-use crate::sampler::Sampler;
+use crate::model::{AppRow, ProcRow, ProcSnapshot, QuickSnapshot};
+use crate::sampler::{online_count, Sampler};
 
 const CSS: &str = r#"
 .sysmon-card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -29,7 +31,9 @@ progressbar.sysmon-battery-bar trough progress { min-height: 8px; border-radius:
 .sysmon-seg-bar { min-height: 10px; border-radius: 5px; background-color: alpha(var(--border-color), 0.4); }
 .sysmon-seg-used { border-radius: 5px; background-color: var(--accent-bg-color); }
 .sysmon-seg-cache { border-radius: 5px; background-color: var(--warning-bg-color); }
-.sysmon-seg-free { border-radius: 5px; }
+.sysmon-seg-free { border-radius: 5px; background-color: alpha(var(--border-color), 0.4); }
+.sysmon-legend { font-size: 11px; }
+.sysmon-legend-swatch { border-radius: 3px; min-width: 12px; min-height: 12px; }
 "#;
 
 struct Ui {
@@ -39,12 +43,19 @@ struct Ui {
     core_value: gtk4::Label,
     pkg_value: gtk4::Label,
     temp_value: gtk4::Label,
+    cpu_name: gtk4::Label,
+    cpu_max: gtk4::Label,
+    cpu_boost: gtk4::Label,
     rapl_hint: gtk4::Box,
     bat_bar: ProgressBar,
     batt_pct: gtk4::Label,
     bat_health: gtk4::Label,
     bat_charge: gtk4::Label,
     bat_discharge: gtk4::Label,
+    bat_cycle: gtk4::Label,
+    bat_cycle_row: adw::ActionRow,
+    bat_temp: gtk4::Label,
+    bat_temp_row: adw::ActionRow,
     mem_seg_bar: gtk4::Box,
     mem_seg_used: gtk4::Box,
     mem_seg_cache: gtk4::Box,
@@ -54,14 +65,19 @@ struct Ui {
     mem_free: gtk4::Label,
     mem_swap: gtk4::Label,
     mem_zram: gtk4::Label,
+    mem_avail: gtk4::Label,
     net_down: gtk4::Label,
     net_up: gtk4::Label,
+    net_ifaces_box: gtk4::Box,
     apps_store: ListStore,
     procs_store: ListStore,
+    apps_iters: RefCell<HashMap<String, TreeIter>>,
+    procs_iters: RefCell<HashMap<u32, TreeIter>>,
+    net_iface_rows: RefCell<Vec<(String, adw::ActionRow, gtk4::Label)>>,
 }
 
 impl Ui {
-    fn update(&self, s: &Snapshot) {
+    fn update_quick(&self, s: &QuickSnapshot) {
         for (i, c) in s.cpu.cores.iter().enumerate() {
             if let Some(b) = self.core_load.get(i) {
                 b.set_fraction((c.load / 100.0).clamp(0.0, 1.0));
@@ -96,6 +112,18 @@ impl Ui {
         self.core_value.set_text(&cw);
         self.pkg_value.set_text(&pw);
         self.temp_value.set_text(&t);
+        self.cpu_name.set_text(&s.cpu.name);
+        let max_freq_txt = if s.cpu.max_freq_mhz > 0 {
+            format!("{} MHz", s.cpu.max_freq_mhz)
+        } else {
+            "—".to_string()
+        };
+        self.cpu_max.set_text(&max_freq_txt);
+        self.cpu_boost.set_text(match s.cpu.boost {
+            Some(true) => "Enabled",
+            Some(false) => "Disabled",
+            None => "—",
+        });
         self.rapl_hint.set_visible(s.cpu.pkg_watts.is_none());
 
         if let Some(b) = &s.battery {
@@ -109,12 +137,25 @@ impl Ui {
             self.bat_charge.set_text(&format!("{charge_w:.1} W"));
             self.bat_discharge
                 .set_text(&format!("{discharge_w:.1} W"));
+            self.bat_cycle
+                .set_text(&b.cycle_count.map(|c| c.to_string()).unwrap_or_else(|| "—".into()));
+            self.bat_temp.set_text(
+                &b.temp_c
+                    .map(|t| format!("{t:.0} °C"))
+                    .unwrap_or_else(|| "—".into()),
+            );
+            self.bat_cycle_row.set_visible(b.cycle_count.is_some());
+            self.bat_temp_row.set_visible(b.temp_c.is_some());
         } else {
             self.bat_bar.set_fraction(0.0);
             self.batt_pct.set_text("—");
             self.bat_health.set_text("No battery");
             self.bat_charge.set_text("—");
             self.bat_discharge.set_text("—");
+            self.bat_cycle.set_text("—");
+            self.bat_temp.set_text("—");
+            self.bat_cycle_row.set_visible(false);
+            self.bat_temp_row.set_visible(false);
         }
 
         let t = s.mem.total_kb;
@@ -123,9 +164,15 @@ impl Ui {
         let free = s.mem.free_kb;
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
 
-        self.mem_used.set_text(&human_kb(used));
-        self.mem_cache.set_text(&human_kb(cache));
-        self.mem_free.set_text(&human_kb(free));
+        let pct = |v: u64| format!(" ({:.0}%)", 100.0 * v as f64 / t as f64);
+        self.mem_used.set_text(&format!("{}{}", human_kb(used), pct(used)));
+        self.mem_avail.set_text(&format!(
+            "{}{}",
+            human_kb(s.mem.avail_kb),
+            pct(s.mem.avail_kb)
+        ));
+        self.mem_cache.set_text(&format!("{}{}", human_kb(cache), pct(cache)));
+        self.mem_free.set_text(&format!("{}{}", human_kb(free), pct(free)));
         self.mem_swap.set_text(&format!(
             "{} / {}",
             human_kb(swap_used),
@@ -135,7 +182,7 @@ impl Ui {
 
         let w = self.mem_seg_bar.width();
         if t > 0 && w > 0 {
-            let avail_w = (w - 4).max(1) as i32;
+            let avail_w = (w - 4).max(1);
             let used_w = (avail_w as f64 * (used as f64 / t as f64)).round() as i32;
             let cache_w = (avail_w as f64 * (cache as f64 / t as f64)).round() as i32;
             let cache_w = cache_w.min((avail_w - used_w).max(0));
@@ -148,38 +195,122 @@ impl Ui {
         self.net_down.set_text(&human_bps(s.net.down_bps));
         self.net_up.set_text(&human_bps(s.net.up_bps));
 
-        self.refill_table(&self.apps_store, &s.apps, &s.procs, true);
-        self.refill_table(&self.procs_store, &s.apps, &s.procs, false);
+        self.update_net_ifaces(&s.net.ifaces);
     }
 
-    fn refill_table(
-        &self,
-        store: &ListStore,
-        apps: &[crate::model::AppRow],
-        procs: &[crate::model::ProcRow],
-        apps_view: bool,
-    ) {
-        store.clear();
-        if apps_view {
-            for a in apps {
-                let it = store.append();
-                store.set_value(&it, 0, &a.name.to_value());
-                store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
-                store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
-                store.set_value(&it, 3, &a.proc_count.to_value());
-                store.set_value(&it, 4, &a.rss_kb.to_value());
-                store.set_value(&it, 5, &a.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",").to_value());
-            }
-        } else {
-            for p in procs {
-                let it = store.append();
-                store.set_value(&it, 0, &p.name.to_value());
-                store.set_value(&it, 1, &p.pid.to_value());
-                store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
-                store.set_value(&it, 3, &human_kb(p.rss_kb).to_value());
-                store.set_value(&it, 4, &p.rss_kb.to_value());
+    fn refill_tables(&self, apps: &[AppRow], procs: &[ProcRow]) {
+        self.update_apps(apps);
+        self.update_procs(procs);
+    }
+
+    fn update_apps(&self, apps: &[AppRow]) {
+        let mut iters = self.apps_iters.borrow_mut();
+        let store = &self.apps_store;
+        let mut seen = HashSet::with_capacity(apps.len());
+        for a in apps {
+            seen.insert(a.name.clone());
+            let it = match iters.get(&a.name) {
+                Some(it) => it.clone(),
+                None => {
+                    let it = store.append();
+                    iters.insert(a.name.clone(), it.clone());
+                    it
+                }
+            };
+            store.set_value(&it, 0, &a.name.to_value());
+            store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
+            store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
+            store.set_value(&it, 3, &a.proc_count.to_value());
+            store.set_value(&it, 4, &a.rss_kb.to_value());
+            store.set_value(
+                &it,
+                5,
+                &a.pids
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+                    .to_value(),
+            );
+        }
+        let mut gone = Vec::new();
+        for (name, it) in iters.iter() {
+            if !seen.contains(name) {
+                store.remove(it);
+                gone.push(name.clone());
             }
         }
+        for n in gone {
+            iters.remove(&n);
+        }
+    }
+
+    fn update_procs(&self, procs: &[ProcRow]) {
+        let mut iters = self.procs_iters.borrow_mut();
+        let store = &self.procs_store;
+        let mut seen = HashSet::with_capacity(procs.len());
+        for p in procs {
+            seen.insert(p.pid);
+            let it = match iters.get(&p.pid) {
+                Some(it) => it.clone(),
+                None => {
+                    let it = store.append();
+                    iters.insert(p.pid, it.clone());
+                    it
+                }
+            };
+            store.set_value(&it, 0, &p.name.to_value());
+            store.set_value(&it, 1, &p.pid.to_value());
+            store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
+            store.set_value(&it, 3, &human_kb(p.rss_kb).to_value());
+            store.set_value(&it, 4, &p.rss_kb.to_value());
+        }
+        let mut gone = Vec::new();
+        for (pid, it) in iters.iter() {
+            if !seen.contains(pid) {
+                store.remove(it);
+                gone.push(*pid);
+            }
+        }
+        for pid in gone {
+            iters.remove(&pid);
+        }
+    }
+
+    fn update_net_ifaces(&self, ifaces: &[crate::model::NetIface]) {
+        let mut rows = self.net_iface_rows.borrow_mut();
+        let mut seen = HashSet::with_capacity(ifaces.len());
+        for i in ifaces {
+            seen.insert(i.name.clone());
+            let label = match rows.iter().find(|(n, _, _)| *n == i.name) {
+                Some((_, _, label)) => label.clone(),
+                None => {
+                    let r = adw::ActionRow::new();
+                    r.set_title(&i.label);
+                    r.set_subtitle(&i.name);
+                    let v = gtk4::Label::new(None);
+                    v.add_css_class("sysmon-row-value");
+                    v.set_xalign(1.0);
+                    r.add_suffix(&v);
+                    self.net_ifaces_box.append(&r);
+                    rows.push((i.name.clone(), r.clone(), v.clone()));
+                    v
+                }
+            };
+            label.set_text(&format!(
+                "↓ {}  ↑ {}",
+                human_bps(i.down_bps),
+                human_bps(i.up_bps)
+            ));
+        }
+        rows.retain(|(name, row, _)| {
+            if seen.contains(name) {
+                true
+            } else {
+                self.net_ifaces_box.remove(row);
+                false
+            }
+        });
     }
 }
 
@@ -233,55 +364,17 @@ fn boxed_list() -> gtk4::ListBox {
     list
 }
 
-fn present_action(
-    pop: &gtk4::Popover,
-    label: &str,
-    activate: impl Fn() + 'static,
-) {
-    let btn = gtk4::Button::with_label(label);
-    btn.add_css_class("flat");
-    btn.set_hexpand(true);
-    let weak = pop.downgrade();
-    btn.connect_clicked(move |_| {
-        if let Some(p) = weak.upgrade() {
-            p.popdown();
-        }
-        activate();
-    });
-    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-    box_.append(&btn);
-    pop.set_child(Some(&box_));
-    pop.present();
-}
-
-fn confirm_terminate(
-    window: &impl IsA<gtk4::Window>,
-    toasts: adw::ToastOverlay,
-    heading: &str,
-    body: &str,
-    mut pids: Vec<u32>,
-) {
-    let own = std::process::id();
-    pids.retain(|&p| p != own);
-    if pids.is_empty() {
-        return;
-    }
-    let dlg = adw::MessageDialog::new(Some(window), Some(heading), Some(body));
-    dlg.add_response("cancel", "Cancel");
-    dlg.add_response("end", "End");
-    dlg.set_default_response(Some("end"));
-    dlg.set_close_response("cancel");
-    dlg.connect_response(None, move |d, resp| {
-        if resp == "end" {
-            if pids.iter().any(|&pid| !crate::process::terminate(pid)) {
-                toasts.add_toast(adw::Toast::new(
-                    "Couldn't end process — it may have already exited",
-                ));
-            }
-        }
-        d.close();
-    });
-    dlg.present();
+fn legend_item(css_class: &str, text: &str) -> gtk4::Box {
+    let item = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let swatch = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    swatch.add_css_class("sysmon-legend-swatch");
+    swatch.add_css_class(css_class);
+    item.append(&swatch);
+    let label = gtk4::Label::new(Some(text));
+    label.add_css_class("dim-label");
+    label.add_css_class("sysmon-legend");
+    item.append(&label);
+    item
 }
 
 fn trail_label() -> gtk4::Label {
@@ -348,7 +441,7 @@ fn add_text_column(
     view.append_column(&col);
 }
 
-fn build_apps_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
+fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
     let store = ListStore::new(&[
         glib::Type::STRING,
         glib::Type::U32,
@@ -369,10 +462,10 @@ fn build_apps_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
     sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
     sw.set_height_request(300);
-    (store, view, sw)
+    (store, sw)
 }
 
-fn build_procs_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
+fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
     let store = ListStore::new(&[
         glib::Type::STRING,
         glib::Type::U32,
@@ -392,7 +485,7 @@ fn build_procs_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
     sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
     sw.set_height_request(300);
-    (store, view, sw)
+    (store, sw)
 }
 
 pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
@@ -404,6 +497,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         .default_width(864)
         .default_height(640)
         .build();
+    window.set_icon_name(Some("dev.sysmon.Sysmon"));
 
     let toast_overlay = adw::ToastOverlay::new();
 
@@ -430,6 +524,27 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     });
     header.pack_start(&freeze_btn);
 
+    let about_btn = gtk4::Button::from_icon_name("help-about-symbolic");
+    about_btn.set_tooltip_text(Some("About Sysmon"));
+    let app_about = app.clone();
+    about_btn.connect_clicked(move |_| {
+        let d = adw::AboutDialog::new();
+        d.set_application_icon("dev.sysmon.Sysmon");
+        d.set_application_name("Sysmon");
+        d.set_version(env!("CARGO_PKG_VERSION"));
+        d.set_comments(
+            "Live system monitor for CPU, battery, memory, network, and processes.",
+        );
+        d.set_license_type(gtk4::License::Custom);
+        d.set_license(
+            "Source-available. Free to read/run/share verbatim; no modification and \
+             redistribution, no re-labeling/re-branding, no commercial sale. See LICENSE.",
+        );
+        d.set_website("https://github.com/example/sysmon");
+        d.present(app_about.active_window().as_ref());
+    });
+    header.pack_end(&about_btn);
+
     // CPU page
     let (cpu_card, cbody, cheader) = card("view-grid-symbolic", "CPU");
     let cpu_avg = trail_label();
@@ -447,7 +562,7 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     flow.set_hexpand(true);
     let mut core_load = Vec::new();
     let mut core_freq = Vec::new();
-    for i in 0..8 {
+    for i in 0..online_count() {
         let v = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         v.set_size_request(170, -1);
         v.add_css_class("sysmon-core-chip");
@@ -485,6 +600,12 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     summary.append(&pkg_row);
     let (temp_row, temp_value) = row("Temperature", "CPU package temperature");
     summary.append(&temp_row);
+    let (model_row, cpu_name) = row("Model", "CPU model name from /proc/cpuinfo");
+    summary.append(&model_row);
+    let (max_row, cpu_max) = row("Max frequency", "Hardware max CPU frequency (cpuinfo_max_freq)");
+    summary.append(&max_row);
+    let (boost_row, cpu_boost) = row("Turbo boost", "Whether frequency boosting is allowed");
+    summary.append(&boost_row);
     cbody.append(&summary);
 
     let rapl_hint = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
@@ -520,6 +641,10 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let (discharge_row, bat_discharge) =
         row("Discharging", "Current discharging power draw");
     blist.append(&discharge_row);
+    let (cycle_row, bat_cycle) = row("Cycle count", "Battery charge/discharge cycles");
+    blist.append(&cycle_row);
+    let (temp_row_bat, bat_temp) = row("Temperature", "Battery temperature");
+    blist.append(&temp_row_bat);
     bbody.append(&blist);
 
     // Memory page
@@ -541,10 +666,20 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     mem_seg_bar.append(&mem_seg_free);
     mbody.append(&mem_seg_bar);
 
+    let legend = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
+    legend.set_margin_top(2);
+    legend.append(&legend_item("sysmon-seg-used", "Used"));
+    legend.append(&legend_item("sysmon-seg-cache", "Cache"));
+    legend.append(&legend_item("sysmon-seg-free", "Free"));
+    mbody.append(&legend);
+
     let mlist = boxed_list();
     let (used_row, mem_used) =
         row("Used", "MemTotal − MemAvailable, as System Monitor counts it");
     mlist.append(&used_row);
+    let (avail_row, mem_avail) =
+        row("Available", "MemAvailable — memory usable by apps without swapping");
+    mlist.append(&avail_row);
     let (cache_row, mem_cache) = row("Cache", "Buffers + Cached (reclaimable page cache)");
     mlist.append(&cache_row);
     let (free_row, mem_free) = row("Free", "MemFree (completely unused)");
@@ -563,6 +698,10 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let (up_row, net_up) = row("↑ Upload", "Upload rate");
     nlist.append(&up_row);
     nbody.append(&nlist);
+    let net_ifaces_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    net_ifaces_box.add_css_class("boxed-list");
+    net_ifaces_box.set_margin_top(10);
+    nbody.append(&net_ifaces_box);
 
     // Processes page
     let (proc_card, pbody, pheader) = card("view-list-symbolic", "Processes");
@@ -570,86 +709,11 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
     pheader.append(&switcher);
-    let (apps_store, apps_view, apps_sw) = build_apps_table();
-    let (procs_store, procs_view, procs_sw) = build_procs_table();
+    let (apps_store, apps_sw) = build_apps_table();
+    let (procs_store, procs_sw) = build_procs_table();
     stack.add_titled(&apps_sw, Some("apps"), "Apps");
     stack.add_titled(&procs_sw, Some("procs"), "Processes");
     pbody.append(&stack);
-
-    {
-        let win = window.clone();
-        let toasts = toast_overlay.clone();
-        let store = Rc::new(apps_store.clone());
-        let view = apps_view.clone();
-        let pop = gtk4::Popover::new();
-        let gesture = gtk4::GestureClick::new();
-        gesture.set_button(3);
-        gesture.connect_pressed(move |_, _, x, y| {
-            if pop.parent().is_none() {
-                pop.set_parent(&view);
-            }
-            let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
-                return;
-            };
-            let Some(iter) = store.iter(&path) else {
-                return;
-            };
-            view.selection().select_iter(&iter);
-            let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
-            let own = std::process::id();
-            let targets: Vec<u32> = store
-                .get_value(&iter, 5)
-                .get::<String>()
-                .unwrap_or_default()
-                .split(',')
-                .filter_map(|s| s.parse().ok())
-                .filter(|&p| p != own)
-                .collect();
-            let win = win.clone();
-            let toasts = toasts.clone();
-            present_action(&pop, "Close App", move || {
-                let heading = format!("Close app \"{name}\"?");
-                let body = format!(
-                    "Its {} process(es) will be terminated.",
-                    targets.len()
-                );
-                confirm_terminate(&win, toasts.clone(), &heading, &body, targets.clone())
-            });
-        });
-        apps_view.add_controller(gesture);
-    }
-
-    {
-        let win = window.clone();
-        let toasts = toast_overlay.clone();
-        let store = Rc::new(procs_store.clone());
-        let view = procs_view.clone();
-        let pop = gtk4::Popover::new();
-        let gesture = gtk4::GestureClick::new();
-        gesture.set_button(3);
-        gesture.connect_pressed(move |_, _, x, y| {
-            if pop.parent().is_none() {
-                pop.set_parent(&view);
-            }
-            let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
-                return;
-            };
-            let Some(iter) = store.iter(&path) else {
-                return;
-            };
-            view.selection().select_iter(&iter);
-            let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
-            let pid: u32 = store.get_value(&iter, 1).get().unwrap_or_default();
-            let win = win.clone();
-            let toasts = toasts.clone();
-            present_action(&pop, "End Process", move || {
-                let heading = format!("End process \"{name}\" (PID {pid})?");
-                let body = "The process will be terminated.";
-                confirm_terminate(&win, toasts.clone(), &heading, &body, vec![pid])
-            });
-        });
-        procs_view.add_controller(gesture);
-    }
 
     // View stack + switcher
     let view_stack = adw::ViewStack::new();
@@ -702,12 +766,19 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         core_value,
         pkg_value,
         temp_value,
+        cpu_name,
+        cpu_max,
+        cpu_boost,
         rapl_hint,
         bat_bar,
         batt_pct,
         bat_health,
         bat_charge,
         bat_discharge,
+        bat_cycle,
+        bat_cycle_row: cycle_row,
+        bat_temp,
+        bat_temp_row: temp_row_bat,
         mem_seg_bar,
         mem_seg_used,
         mem_seg_cache,
@@ -717,19 +788,35 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         mem_free,
         mem_swap,
         mem_zram,
+        mem_avail,
         net_down,
         net_up,
+        net_ifaces_box,
         apps_store,
         procs_store,
+        apps_iters: RefCell::new(HashMap::new()),
+        procs_iters: RefCell::new(HashMap::new()),
+        net_iface_rows: RefCell::new(Vec::new()),
     });
 
-    let (sender, receiver) = std::sync::mpsc::channel::<Snapshot>();
+    let (quick_sender, quick_receiver) = std::sync::mpsc::channel::<QuickSnapshot>();
+    let (proc_sender, proc_receiver) = std::sync::mpsc::channel::<ProcSnapshot>();
     let ui2 = Rc::clone(&ui);
     let frozen_loop = Rc::clone(&frozen);
     glib::timeout_add_local(Duration::from_millis(250), move || {
-        while let Ok(s) = receiver.try_recv() {
+        while let Ok(s) = quick_receiver.try_recv() {
             if !frozen_loop.get() {
-                ui2.update(&s);
+                ui2.update_quick(&s);
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+    let ui3 = Rc::clone(&ui);
+    let frozen_proc = Rc::clone(&frozen);
+    glib::timeout_add_local(Duration::from_millis(250), move || {
+        while let Ok(s) = proc_receiver.try_recv() {
+            if !frozen_proc.get() {
+                ui3.refill_tables(&s.apps, &s.procs);
             }
         }
         glib::ControlFlow::Continue
@@ -738,7 +825,9 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         let mut sampler = Sampler::new();
         loop {
             thread::sleep(Duration::from_millis(1000));
-            if sender.send(sampler.sample()).is_err() {
+            if quick_sender.send(sampler.sample_quick()).is_err()
+                || proc_sender.send(sampler.sample_procs()).is_err()
+            {
                 break;
             }
         }

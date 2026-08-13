@@ -1,0 +1,40 @@
+Sysmon Source-Available License
+==============================
+
+Copyright (C) 2026 the Sysmon authors.
+
+This software and its source code are made available for everyone to read,
+study, and use free of charge. However, this is a SOURCE-AVAILABLE license,
+NOT an open-source license as defined by the Open Source Initiative. The
+following restrictions apply in addition to the grant below.
+
+1. Grant of use
+   You are permitted to download, view, run, and share verbatim copies of
+   this software and its source code, provided this license and the copyright
+   notice above are retained in all copies.
+
+2. No modification and redistribution of modified versions
+   You may NOT distribute modified versions of the software or its source.
+   Forking for personal study is allowed, but modified versions may not be
+   published or redistributed.
+
+3. No re-labeling / re-branding
+   You may NOT rename, re-brand, or re-label the software (including its
+   application name "Sysmon", its icon, or its identity) for any
+   redistribution, whether modified or unmodified.
+
+4. No commercial sale
+   You may NOT sell the software, nor sell access to it, nor bundle it into
+   a paid product or service, whether modified or unmodified.
+
+5. The icon
+   The application icon (data/icons/hicolor/512x512/apps/dev.sysmon.Sysmon.png
+   and any derived sizes) is part of this project and is subject to the same
+   restrictions: it may not be modified, re-labeled, or sold.
+
+This license does not grant any patent rights. The software is provided "AS
+IS", without warranty of any kind, express or implied, including but not
+limited to the warranties of merchantability, fitness for a particular
+purpose, and non-infringement. In no event shall the authors be liable for any
+claim, damages, or other liability arising from, out of, or in connection with
+the software or its use.

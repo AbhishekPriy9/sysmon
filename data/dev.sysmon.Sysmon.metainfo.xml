@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.sysmon.Sysmon</id>
+  <name>Sysmon</name>
+  <summary>Live system monitor for CPU, battery, memory, network, and processes</summary>
+  <description>
+    <p>Sysmon is a lightweight desktop system monitor built with GTK4 and libadwaita.
+    It shows live readouts of CPU load and frequency, package and core power draw
+    (RAPL), CPU temperature, battery health and wattage, memory usage, network
+    throughput, and a sortable apps/processes table. Hardware is auto-discovered so
+    it runs on arbitrary Linux machines.</p>
+  </description>
+  <launchable type="desktop-id">dev.sysmon.Sysmon.desktop</launchable>
+  <url type="homepage">https://github.com/example/sysmon</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-08-13"/>
+  </releases>
+</component>
