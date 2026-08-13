@@ -61,5 +61,3 @@ Licensing: this project ships under a **custom source-available license** (`LICE
 - `process.rs` — `/proc` scan + app grouping.
 - `ui.rs` — GTK4/libadwaita widgets, CSS, 1 s refresh loop. Core chips are built from `online_count()`, not a hardcoded count.
 - `model.rs` — plain data structs.
-
-Longer rationale lives in `docs/sysmon-implementation-plan.md` and `docs/superpowers/`; prefer that for design intent over guessing from code.

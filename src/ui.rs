@@ -545,7 +545,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     });
     header.pack_end(&about_btn);
 
-    // CPU page
     let (cpu_card, cbody, cheader) = card("view-grid-symbolic", "CPU");
     let cpu_avg = trail_label();
     cheader.append(&cpu_avg);
@@ -622,7 +621,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     rapl_hint.set_visible(false);
     cbody.append(&rapl_hint);
 
-    // Battery page
     let (batt_card, bbody, bheader) = card("battery-symbolic", "Battery");
     let batt_pct = trail_label();
     bheader.append(&batt_pct);
@@ -647,7 +645,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     blist.append(&temp_row_bat);
     bbody.append(&blist);
 
-    // Memory page
     let (mem_card, mbody, _mheader) = card("drive-harddisk-solidstate-symbolic", "Memory");
     let mem_seg_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
     mem_seg_bar.add_css_class("sysmon-seg-bar");
@@ -690,7 +687,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     mlist.append(&zram_row);
     mbody.append(&mlist);
 
-    // Network page
     let (net_card, nbody, _nheader) = card("network-wireless-symbolic", "Network");
     let nlist = boxed_list();
     let (down_row, net_down) = row("↓ Download", "Download rate");
@@ -703,7 +699,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     net_ifaces_box.set_margin_top(10);
     nbody.append(&net_ifaces_box);
 
-    // Processes page
     let (proc_card, pbody, pheader) = card("view-list-symbolic", "Processes");
     let stack = gtk4::Stack::new();
     let switcher = gtk4::StackSwitcher::new();
@@ -715,7 +710,6 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     stack.add_titled(&procs_sw, Some("procs"), "Processes");
     pbody.append(&stack);
 
-    // View stack + switcher
     let view_stack = adw::ViewStack::new();
     view_stack.set_vhomogeneous(false);
     view_stack.add_titled_with_icon(&page(&cpu_card), Some("cpu"), "CPU", "view-grid-symbolic");
