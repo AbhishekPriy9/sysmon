@@ -53,26 +53,37 @@ pub fn scan_processes(
 }
 
 pub fn group_apps(procs: &[ProcRow]) -> Vec<AppRow> {
-    let mut map: HashMap<&str, (f64, f64, u64, u32)> = HashMap::new();
+    let mut map: HashMap<&str, (f64, f64, u64, u32, Vec<u32>)> = HashMap::new();
     for p in procs {
-        let e = map.entry(p.name.as_str()).or_insert((0.0, 0.0, 0, 0));
+        let e = map
+            .entry(p.name.as_str())
+            .or_insert((0.0, 0.0, 0, 0, Vec::new()));
         e.0 += p.cpu_pct;
         e.1 += p.mem_pct;
         e.2 += p.rss_kb;
         e.3 += 1;
+        e.4.push(p.pid);
     }
     let mut rows: Vec<AppRow> = map
         .into_iter()
-        .map(|(name, (cpu, mem, rss, count))| AppRow {
+        .map(|(name, (cpu, mem, rss, count, pids))| AppRow {
             name: name.to_string(),
             cpu_pct: cpu,
             mem_pct: mem,
             rss_kb: rss,
             proc_count: count,
+            pids,
         })
         .collect();
     rows.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
     rows
+}
+
+pub fn terminate(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) == 0 }
 }
 
 #[cfg(test)]
@@ -93,12 +104,20 @@ mod tests {
         assert!((apps[0].mem_pct - 3.0).abs() < 1e-9);
         assert_eq!(apps[0].rss_kb, 300);
         assert_eq!(apps[0].proc_count, 2);
+        assert_eq!(apps[0].pids, vec![1, 2]);
         assert_eq!(apps[1].name, "code");
     }
 
     #[test]
     fn group_apps_empty_input() {
         assert!(group_apps(&[]).is_empty());
+    }
+
+    #[test]
+    fn terminate_rejects_invalid_pids() {
+        assert!(!terminate(0));
+        assert!(!terminate(3_000_000_000));
+        assert!(!terminate(2_000_000_000));
     }
 
     #[test]

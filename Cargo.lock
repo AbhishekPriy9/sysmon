@@ -590,6 +590,7 @@ dependencies = [
  "glib",
  "gtk4",
  "libadwaita",
+ "libc",
 ]
 
 [[package]]

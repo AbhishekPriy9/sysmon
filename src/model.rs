@@ -55,4 +55,5 @@ pub struct AppRow {
     pub mem_pct: f64,
     pub rss_kb: u64,
     pub proc_count: u32,
+    pub pids: Vec<u32>,
 }
