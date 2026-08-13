@@ -1,63 +1,52 @@
 # AGENTS.md
 
-Rust + GTK4/libadwaita desktop system monitor (`sysmon`), edition 2024.
-Single binary, no separate library. Live readout of CPU, battery, memory, network, and an apps/processes table, refreshed every 1 s.
+sysmon is a Rust + GTK4/libadwaita desktop system monitor. One binary, no library. It shows CPU, battery, memory, network, and a processes table, refreshing every second.
 
-## Build & run prerequisites
+## Build
 
-- Requires system dev packages before `cargo build`/`cargo test` will even compile:
-  `sudo apt-get install -y libgtk-4-dev libadwaita-1-dev` (plus `pkg-config`).
-- Toolchain must be recent enough for `edition = "2024"` (see `Cargo.toml`).
-- `cargo run` launches the GUI and **needs a display** (X11/Wayland session). It will not run headless.
+You need the GTK4 and libadwaita dev packages before anything compiles:
+    sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+The toolchain has to support edition 2024 (see Cargo.toml). `cargo run` opens a GUI, so it needs a real X11/Wayland display and won't run headless.
 
 ## Tests
 
-- Tests are inline `#[cfg(test)]` modules in the source files; the `tests/` dir is empty. Run with `cargo test`.
-- Tests read **real Linux hardware** files (`/proc`, `/sys`): `scan_processes`, `sample_quick`, `sample_procs` hit the live system. They are not portable:
-  - `sample_populates_core_fields` asserts `cores.len() == online_count()` (discovered at runtime), so it passes on any machine, not just the 8-core target.
-  - `rapl_energy_files_are_world_readable` discovers the RAPL zones and skips (instead of failing) when `energy_uj` isn't readable, so it passes on machines/CI without RAPL access; install `data/99-sysmon-rapl.rules` for full wattage.
-- CI: `.github/workflows/ci.yml` builds, runs clippy, and runs `cargo test` on Ubuntu (installs `libgtk-4-dev`/`libadwaita-1-dev`).
+Tests live in inline `#[cfg(test)]` modules and read real /proc and /sys hardware, so they only run on Linux. Two are environment-sensitive and handled gracefully:
+- `sample_populates_core_fields` uses `online_count()`, so it passes on any machine.
+- `rapl_energy_files_are_world_readable` skips when RAPL isn't readable instead of failing.
+CI (`.github/workflows/ci.yml`) installs the dev packages, then runs build, clippy, and `cargo test` on Ubuntu.
 
-## RAPL / CPU wattage setup (not in repo)
+## RAPL / CPU wattage
 
-RAPL energy files under `/sys/class/powercap/intel-rapl:0*/energy_uj` are root-only by default. Without this, CPU package/core watts show "no access". The rule is shipped as `data/99-sysmon-rapl.rules` and installed to `/etc/udev/rules.d/` by the `.deb` (with a `postinst` that reloads udev). For a local setup, copy it once:
+The RAPL energy files under /sys/class/powercap/intel-rapl:0*/energy_uj are root-only by default, so CPU watts show "no access" until permissions are loosened. The udev rule ships at data/99-sysmon-rapl.rules and is installed by the .deb (postinst reloads udev). For local dev, copy it once:
+    SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0/energy_uj"
+    SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0:0/energy_uj"
+    sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap
 
-```
-SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0/energy_uj"
-SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0:0/energy_uj"
-```
+## Hardware discovery
 
-Then `sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap`. Survives reboots; re-check after reboot with `cargo test rapl_energy_files_are_world_readable`.
-
-## Hardware discovery (not machine-pinned)
-
-All hardware is auto-discovered at `Sampler::new()` time so the binary runs on arbitrary Linux hardware, not just the dev laptop:
-
-- **Cores**: `online_count()` reads `/sys/devices/system/cpu/online`.
-- **RAPL package/core watts**: `discover_rapl()` scans `/sys/class/powercap`, reads each zone's `name` (`package-0`, `core`, …) and `max_energy_range_uj`. Works for Intel layouts; other vendors are picked up if the kernel exposes them.
-- **CPU temperature**: `discover_cpu_thermal_zone()` scans `/sys/class/thermal` `type` files, preferring `x86_pkg_temp`, then `cpu_thermal`, then `cpu`.
-- **Battery**: `discover_battery()` scans `/sys/class/power_supply` for a `type == "Battery"` entry.
-- **`clk_tck` / page size**: read via `libc::sysconf(_SC_CLK_TCK)` / `_SC_PAGESIZE` (no longer hardcoded).
-- **Network**: `lo` is the only still-hardcoded exclusion (universal loopback, safe to keep).
+Everything is discovered at `Sampler::new()` so the binary runs on any Linux box, not just the dev machine:
+- Cores: `online_count()` reads /sys/devices/system/cpu/online
+- RAPL: `discover_rapl()` scans /sys/class/powercap by zone name (package-0, core, ...)
+- CPU temp: `discover_cpu_thermal_zone()` prefers x86_pkg_temp, then cpu_thermal, then cpu
+- Battery: `discover_battery()` looks for a power_supply entry of type Battery
+- clk_tck / page size: `libc::sysconf`
+- Network: only `lo` is hardcoded (loopback)
 
 ## Packaging
 
-`.deb` builds use `cargo-deb`; the control `depends` line is `libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.1)` (broad runtime compatibility, not the build machine's 4.18/1.7). The `[package.metadata.deb]` block in `Cargo.toml` installs the binary, the hicolor icon (`data/icons/hicolor/512x512/apps/dev.sysmon.Sysmon.png`), the `.desktop` file (`dev.sysmon.Sysmon.desktop`), and `LICENSE`.
+.deb builds use cargo-deb. `depends` is `libgtk-4-1 (>= 4.6), libadwaita-1-0 (>= 1.1)`. The `[package.metadata.deb]` block in Cargo.toml installs the binary, icon, .desktop, the RAPL udev rule, and LICENSE.
+License is custom source-available (see LICENSE): read/run/share verbatim copies freely, but no modified redistribution, rebranding, or sale. Same terms cover the icon.
 
-Licensing: this project ships under a **custom source-available license** (`LICENSE`), not an OSI open-source license — it permits reading/running/sharing verbatim copies but forbids modified redistribution, re-labeling/re-branding, and commercial sale. The icon is covered by the same terms.
+## Releases
 
-## Releases & versioning
+Pushing to main or master runs `.github/workflows/release.yml`: it takes the version from Cargo.toml, tags `v<version>`, builds the .deb, generates notes from conventional commits via git-cliff, and publishes a GitHub release with the .deb attached. If the tag already exists it skips, so bump `version` in Cargo.toml before pushing to cut a new release. Use semver (feat=minor, fix=patch, breaking=major) and keep commit messages in conventional-commit form since the changelog is generated from them.
 
-- Releases are automatic: pushing to `main`/`master` triggers `.github/workflows/release.yml`, which tags `v<Cargo.toml version>`, builds the `.deb`, generates changelog notes from conventional commits (git-cliff), and publishes a GitHub release with the `.deb` attached.
-- **Keep the version current:** whenever you make user-facing changes (features, fixes, breaking changes), bump `version` in `Cargo.toml` before pushing. If you don't, the release step sees the tag already exists and skips — so a forgotten bump means no release.
-- Use semver: `feat` → minor, `fix` → patch, breaking change → major. Commit messages must stay conventional-commit style (`feat:`, `fix:`, `chore:`, …) since the changelog is generated from them.
+## Layout
 
-## Architecture (quick map)
-
-- `main.rs` — `adw::Application` entrypoint, app id `dev.sysmon.Sysmon`.
-- `lib.rs` — module list: `model`, `process`, `read`, `sampler`, `ui`.
-- `read.rs` — pure parsers/math over `/proc` & `/sys` strings (the well-tested core).
-- `sampler.rs` — `Sampler` reads hardware each tick; emits `QuickSnapshot`/`ProcSnapshot`.
-- `process.rs` — `/proc` scan + app grouping.
-- `ui.rs` — GTK4/libadwaita widgets, CSS, 1 s refresh loop. Core chips are built from `online_count()`, not a hardcoded count.
-- `model.rs` — plain data structs.
+- `main.rs` — `adw::Application` entrypoint (app id dev.sysmon.Sysmon)
+- `lib.rs` — modules: model, process, read, sampler, ui
+- `read.rs` — parsers/math over /proc and /sys
+- `sampler.rs` — `Sampler` reads hardware each tick; emits QuickSnapshot/ProcSnapshot
+- `process.rs` — /proc scan and app grouping
+- `ui.rs` — widgets, CSS, 1s refresh loop
+- `model.rs` — data structs
