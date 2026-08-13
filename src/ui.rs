@@ -11,14 +11,35 @@ use libadwaita::prelude::*;
 use crate::model::Snapshot;
 use crate::sampler::Sampler;
 
+const CSS: &str = r#"
+.sysmon-card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+.sysmon-card-trail { font-variant-numeric: tabular-nums; }
+.sysmon-row-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sysmon-card-body { background-color: var(--card-bg-color); border: 1px solid var(--border-color); border-radius: 9px; padding: 10px; }
+.sysmon-core-chip { background-color: var(--card-bg-color); border: 1px solid var(--border-color); border-radius: 9px; padding: 8px 10px; }
+.sysmon-core-name { font-size: 11px; font-weight: 700; opacity: 0.55; }
+.sysmon-core-freq { font-size: 11.5px; opacity: 0.55; font-variant-numeric: tabular-nums; }
+progressbar.sysmon-core-bar trough { min-height: 6px; border-radius: 3px; }
+progressbar.sysmon-core-bar trough progress { min-height: 6px; border-radius: 3px; }
+progressbar.sysmon-battery-bar trough { min-height: 8px; border-radius: 4px; }
+progressbar.sysmon-battery-bar trough progress { min-height: 8px; border-radius: 4px; background-color: var(--success-bg-color); }
+progressbar.sysmon-mem-bar trough { min-height: 8px; border-radius: 4px; }
+progressbar.sysmon-mem-bar trough progress { min-height: 8px; border-radius: 4px; }
+.sysmon-warning { background-color: alpha(var(--warning-bg-color), 0.15); border: 1px solid alpha(var(--warning-bg-color), 0.4); border-radius: 8px; padding: 8px 10px; }
+.sysmon-warning image { color: var(--warning-color); }
+.sysmon-freeze:checked { background-color: var(--accent-bg-color); color: var(--accent-fg-color); }
+"#;
+
 struct Ui {
     core_load: Vec<ProgressBar>,
     core_freq: Vec<gtk4::Label>,
-    cpu_core: gtk4::Label,
-    cpu_pkg: gtk4::Label,
-    cpu_temp: gtk4::Label,
-    rapl_hint: gtk4::Label,
+    cpu_avg: gtk4::Label,
+    core_value: gtk4::Label,
+    pkg_value: gtk4::Label,
+    temp_value: gtk4::Label,
+    rapl_hint: gtk4::Box,
     bat_bar: ProgressBar,
+    batt_pct: gtk4::Label,
     bat_health: gtk4::Label,
     bat_charge: gtk4::Label,
     bat_discharge: gtk4::Label,
@@ -40,14 +61,22 @@ impl Ui {
                 l.set_text(&format!("{:.0}% · {} MHz", c.load, c.freq_mhz));
             }
         }
-        let pw = s
-            .cpu
-            .pkg_watts
-            .map(|w| format!("{w:.1} W"))
-            .unwrap_or_else(|| "no access".into());
+        let n = s.cpu.cores.len();
+        let avg = if n == 0 {
+            0.0
+        } else {
+            s.cpu.cores.iter().map(|c| c.load).sum::<f64>() / n as f64
+        };
+        self.cpu_avg.set_text(&format!("{avg:.0}% avg"));
+
         let cw = s
             .cpu
             .core_watts
+            .map(|w| format!("{w:.1} W"))
+            .unwrap_or_else(|| "no access".into());
+        let pw = s
+            .cpu
+            .pkg_watts
             .map(|w| format!("{w:.1} W"))
             .unwrap_or_else(|| "no access".into());
         let t = s
@@ -55,26 +84,28 @@ impl Ui {
             .temp_c
             .map(|t| format!("{t:.0} °C"))
             .unwrap_or_else(|| "—".into());
-        self.cpu_core.set_text(&format!("Core {cw}"));
-        self.cpu_pkg.set_text(&format!("PKG {pw}"));
-        self.cpu_temp.set_text(&format!("{t}"));
+        self.core_value.set_text(&cw);
+        self.pkg_value.set_text(&pw);
+        self.temp_value.set_text(&t);
         self.rapl_hint.set_visible(s.cpu.pkg_watts.is_none());
 
         if let Some(b) = &s.battery {
             self.bat_bar.set_fraction((b.charge_pct / 100.0).clamp(0.0, 1.0));
-            self.bat_health.set_text(&format!("Health {:.0}%", b.health_pct));
+            self.batt_pct.set_text(&format!("{:.0}%", b.charge_pct));
+            self.bat_health.set_text(&format!("{:.0}%", b.health_pct));
             let charging = b.status.starts_with("Charging");
             let discharging = b.status.starts_with("Discharging");
             let charge_w = if charging { b.watts.abs() } else { 0.0 };
             let discharge_w = if discharging { b.watts.abs() } else { 0.0 };
-            self.bat_charge.set_text(&format!("Charging: {charge_w:.1} W"));
+            self.bat_charge.set_text(&format!("{charge_w:.1} W"));
             self.bat_discharge
-                .set_text(&format!("Discharging: {discharge_w:.1} W"));
+                .set_text(&format!("{discharge_w:.1} W"));
         } else {
             self.bat_bar.set_fraction(0.0);
+            self.batt_pct.set_text("—");
             self.bat_health.set_text("No battery");
-            self.bat_charge.set_text("Charging: —");
-            self.bat_discharge.set_text("Discharging: —");
+            self.bat_charge.set_text("—");
+            self.bat_discharge.set_text("—");
         }
 
         let used = s.mem.total_kb.saturating_sub(s.mem.avail_kb);
@@ -94,9 +125,8 @@ impl Ui {
             human_kb(s.mem.zram_compressed_kb),
         ));
 
-        self.net_up.set_text(&format!("↑ {}", human_bps(s.net.up_bps)));
-        self.net_down
-            .set_text(&format!("↓ {}", human_bps(s.net.down_bps)));
+        self.net_down.set_text(&human_bps(s.net.down_bps));
+        self.net_up.set_text(&human_bps(s.net.up_bps));
 
         self.refill_table(&self.apps_store, &s.apps, &s.procs, true);
         self.refill_table(&self.procs_store, &s.apps, &s.procs, false);
@@ -132,6 +162,74 @@ impl Ui {
     }
 }
 
+fn setup_css() {
+    let provider = gtk4::CssProvider::new();
+    provider.load_from_data(CSS);
+    if let Some(display) = gtk4::gdk::Display::default() {
+        gtk4::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
+fn card(icon: &str, title: &str) -> (gtk4::Box, gtk4::Box, gtk4::Box) {
+    let outer = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
+    let header = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    let image = gtk4::Image::from_icon_name(icon);
+    image.set_pixel_size(16);
+    image.add_css_class("dim-label");
+    header.append(&image);
+    let label = gtk4::Label::new(Some(title));
+    label.add_css_class("dim-label");
+    label.add_css_class("sysmon-card-title");
+    header.append(&label);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    header.append(&spacer);
+    let body = gtk4::Box::new(gtk4::Orientation::Vertical, 10);
+    outer.append(&header);
+    outer.append(&body);
+    (outer, body, header)
+}
+
+fn row(title: &str, tooltip: &str) -> (adw::ActionRow, gtk4::Label) {
+    let r = adw::ActionRow::new();
+    r.set_title(title);
+    r.set_tooltip_text(Some(tooltip));
+    let value = gtk4::Label::new(Some("—"));
+    value.add_css_class("sysmon-row-value");
+    value.set_xalign(1.0);
+    r.add_suffix(&value);
+    (r, value)
+}
+
+fn boxed_list() -> gtk4::ListBox {
+    let list = gtk4::ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk4::SelectionMode::None);
+    list
+}
+
+fn trail_label() -> gtk4::Label {
+    let l = gtk4::Label::new(Some("—"));
+    l.add_css_class("dim-label");
+    l.add_css_class("sysmon-card-trail");
+    l.set_xalign(1.0);
+    l
+}
+
+fn page(child: &impl IsA<gtk4::Widget>) -> gtk4::Box {
+    let b = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    b.set_margin_top(16);
+    b.set_margin_bottom(16);
+    b.set_margin_start(16);
+    b.set_margin_end(16);
+    b.append(child);
+    b
+}
+
 fn human_bps(bps: u64) -> String {
     if bps >= 1_000_000 {
         format!("{:.2} MB/s", bps as f64 / 1e6)
@@ -148,18 +246,6 @@ fn human_kb(kb: u64) -> String {
     } else {
         format!("{:.1} GB", kb as f64 / 1e6)
     }
-}
-
-fn card(title: &str) -> (adw::PreferencesGroup, gtk4::Box) {
-    let group = adw::PreferencesGroup::new();
-    group.set_title(title);
-    let inner = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    inner.set_margin_top(4);
-    inner.set_margin_bottom(4);
-    inner.set_margin_start(8);
-    inner.set_margin_end(8);
-    group.add(&inner);
-    (group, inner)
 }
 
 fn add_text_column(
@@ -237,6 +323,8 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
 }
 
 pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
+    setup_css();
+
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Sysmon")
@@ -244,18 +332,10 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         .default_height(640)
         .build();
 
-    let scroller = gtk4::ScrolledWindow::new();
-    scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-    let root = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    root.set_margin_top(12);
-    root.set_margin_bottom(12);
-    root.set_margin_start(12);
-    root.set_margin_end(12);
-    scroller.set_child(Some(&root));
-
     let header = adw::HeaderBar::new();
     let frozen = Rc::new(std::cell::Cell::new(false));
     let freeze_btn = gtk4::ToggleButton::new();
+    freeze_btn.add_css_class("sysmon-freeze");
     freeze_btn.set_icon_name("media-playback-pause-symbolic");
     freeze_btn.set_tooltip_text(Some("Freeze the live refresh"));
     let frozen_btn = Rc::clone(&frozen);
@@ -274,13 +354,15 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         }));
     });
     header.pack_start(&freeze_btn);
-    let toolbar = adw::ToolbarView::new();
-    toolbar.add_top_bar(&header);
-    toolbar.set_content(Some(&scroller));
-    window.set_content(Some(&toolbar));
 
-    // CPU card
-    let (cg, cbox) = card("CPU");
+    // CPU page
+    let (cpu_card, cbody, cheader) = card("view-grid-symbolic", "CPU");
+    let cpu_avg = trail_label();
+    cheader.append(&cpu_avg);
+
+    let chip_wrap = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    chip_wrap.add_css_class("sysmon-card-body");
+    cbody.append(&chip_wrap);
     let flow = gtk4::FlowBox::new();
     flow.set_min_children_per_line(1);
     flow.set_max_children_per_line(4);
@@ -291,14 +373,20 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let mut core_load = Vec::new();
     let mut core_freq = Vec::new();
     for i in 0..8 {
-        let v = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        let v = gtk4::Box::new(gtk4::Orientation::Vertical, 4);
         v.set_size_request(170, -1);
-        let name = gtk4::Label::new(Some(&format!("CPU{i}")));
+        v.add_css_class("sysmon-core-chip");
+        let name = gtk4::Label::new(Some(&format!("CPU {i}")));
         name.set_xalign(0.0);
+        name.add_css_class("sysmon-core-name");
         let bar = ProgressBar::new();
         bar.set_fraction(0.0);
+        bar.set_show_text(false);
+        bar.set_hexpand(true);
+        bar.add_css_class("sysmon-core-bar");
         let freq = gtk4::Label::new(Some("—"));
         freq.set_xalign(0.0);
+        freq.add_css_class("sysmon-core-freq");
         freq.set_tooltip_text(Some("CPU load % and current clock frequency (MHz)"));
         v.append(&name);
         v.append(&bar);
@@ -307,103 +395,147 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         core_load.push(bar);
         core_freq.push(freq);
     }
-    cbox.append(&flow);
-    let core_label = gtk4::Label::new(Some("—"));
-    core_label.set_xalign(0.0);
-    core_label.set_tooltip_text(Some(
+    chip_wrap.append(&flow);
+
+    let summary = boxed_list();
+    let (core_row, core_value) = row(
+        "Core",
         "Combined power draw of the CPU cores (RAPL core domain)",
-    ));
-    let pkg_label = gtk4::Label::new(Some("—"));
-    pkg_label.set_xalign(0.0);
-    pkg_label.set_tooltip_text(Some(
+    );
+    summary.append(&core_row);
+    let (pkg_row, pkg_value) = row(
+        "Package",
         "Total CPU package power, incl. cores, cache, and GPU (RAPL package domain)",
-    ));
-    let temp_label = gtk4::Label::new(Some("—"));
-    temp_label.set_xalign(0.0);
-    temp_label.set_tooltip_text(Some("CPU package temperature"));
-    let summary_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 16);
-    summary_row.append(&core_label);
-    summary_row.append(&pkg_label);
-    summary_row.append(&temp_label);
-    cbox.append(&summary_row);
-    let rapl_hint = gtk4::Label::new(Some(
+    );
+    summary.append(&pkg_row);
+    let (temp_row, temp_value) = row("Temperature", "CPU package temperature");
+    summary.append(&temp_row);
+    cbody.append(&summary);
+
+    let rapl_hint = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    rapl_hint.add_css_class("sysmon-warning");
+    let warn_icon = gtk4::Image::from_icon_name("dialog-warning-symbolic");
+    warn_icon.set_pixel_size(16);
+    let hint_label = gtk4::Label::new(Some(
         "RAPL not readable — run: sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap",
     ));
-    rapl_hint.set_xalign(0.0);
+    hint_label.set_wrap(true);
+    hint_label.set_xalign(0.0);
+    rapl_hint.append(&warn_icon);
+    rapl_hint.append(&hint_label);
     rapl_hint.set_visible(false);
-    cbox.append(&rapl_hint);
-    root.append(&cg);
+    cbody.append(&rapl_hint);
 
-    // Battery card
-    let (bg, bbox) = card("Battery");
+    // Battery page
+    let (batt_card, bbody, bheader) = card("battery-symbolic", "Battery");
+    let batt_pct = trail_label();
+    bheader.append(&batt_pct);
     let bat_bar = ProgressBar::new();
-    bbox.append(&bat_bar);
-    let bat_health = gtk4::Label::new(Some("—"));
-    bat_health.set_xalign(0.0);
-    bat_health.set_tooltip_text(Some("Battery capacity vs. its design capacity"));
-    bbox.append(&bat_health);
-    let bat_charge = gtk4::Label::new(Some("Charging: —"));
-    bat_charge.set_xalign(0.0);
-    bat_charge.set_tooltip_text(Some("Current charging power draw"));
-    bbox.append(&bat_charge);
-    let bat_discharge = gtk4::Label::new(Some("Discharging: —"));
-    bat_discharge.set_xalign(0.0);
-    bat_discharge.set_tooltip_text(Some("Current discharging power draw"));
-    bbox.append(&bat_discharge);
+    bat_bar.add_css_class("sysmon-battery-bar");
+    bat_bar.set_fraction(0.0);
+    bat_bar.set_show_text(false);
+    bat_bar.set_hexpand(true);
+    bbody.append(&bat_bar);
+    let blist = boxed_list();
+    let (health_row, bat_health) =
+        row("Health", "Battery capacity vs. its design capacity");
+    blist.append(&health_row);
+    let (charge_row, bat_charge) = row("Charging", "Current charging power draw");
+    blist.append(&charge_row);
+    let (discharge_row, bat_discharge) =
+        row("Discharging", "Current discharging power draw");
+    blist.append(&discharge_row);
+    bbody.append(&blist);
 
-    // Memory card
-    let (mg, mbox) = card("Memory");
+    // Memory page
+    let (mem_card, mbody, _mheader) = card("drive-harddisk-solidstate-symbolic", "Memory");
     let mem_bar = ProgressBar::new();
-    mbox.append(&mem_bar);
+    mem_bar.add_css_class("sysmon-mem-bar");
+    mem_bar.set_fraction(0.0);
+    mem_bar.set_show_text(false);
+    mem_bar.set_hexpand(true);
+    mbody.append(&mem_bar);
     let mem_text = gtk4::Label::new(Some("—"));
     mem_text.set_xalign(0.0);
+    mem_text.add_css_class("dim-label");
+    mem_text.add_css_class("sysmon-card-trail");
     mem_text.set_tooltip_text(Some("RAM in use, swap usage, and zram compressed swap size"));
-    mbox.append(&mem_text);
+    mbody.append(&mem_text);
 
-    // Network card
-    let (ng, nbox) = card("Network");
-    let net_down = gtk4::Label::new(Some("↓ —"));
-    net_down.set_xalign(0.0);
-    net_down.set_tooltip_text(Some("Download rate"));
-    nbox.append(&net_down);
-    let net_up = gtk4::Label::new(Some("↑ —"));
-    net_up.set_xalign(0.0);
-    net_up.set_tooltip_text(Some("Upload rate"));
-    nbox.append(&net_up);
+    // Network page
+    let (net_card, nbody, _nheader) = card("network-wireless-symbolic", "Network");
+    let nlist = boxed_list();
+    let (down_row, net_down) = row("↓ Download", "Download rate");
+    nlist.append(&down_row);
+    let (up_row, net_up) = row("↑ Upload", "Upload rate");
+    nlist.append(&up_row);
+    nbody.append(&nlist);
 
-    // Stat cards in a fixed 2-column grid; Network spans the full second row
-    let stat_grid = gtk4::Grid::new();
-    stat_grid.set_column_spacing(12);
-    stat_grid.set_row_spacing(12);
-    bg.set_hexpand(true);
-    mg.set_hexpand(true);
-    ng.set_hexpand(true);
-    stat_grid.attach(&bg, 0, 0, 1, 1);
-    stat_grid.attach(&mg, 1, 0, 1, 1);
-    stat_grid.attach(&ng, 0, 1, 2, 1);
-    root.append(&stat_grid);
-
-    // Processes card
-    let (pg, pbox) = card("Processes");
+    // Processes page
+    let (proc_card, pbody, pheader) = card("view-list-symbolic", "Processes");
     let stack = gtk4::Stack::new();
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
-    pbox.append(&switcher);
+    pheader.append(&switcher);
     let (apps_store, apps_view) = build_apps_table();
     let (procs_store, procs_view) = build_procs_table();
     stack.add_titled(&apps_view, Some("apps"), "Apps");
     stack.add_titled(&procs_view, Some("procs"), "Processes");
-    pbox.append(&stack);
-    root.append(&pg);
+    pbody.append(&stack);
+
+    // View stack + switcher
+    let view_stack = adw::ViewStack::new();
+    view_stack.set_vhomogeneous(false);
+    view_stack.add_titled_with_icon(&page(&cpu_card), Some("cpu"), "CPU", "view-grid-symbolic");
+    view_stack.add_titled_with_icon(
+        &page(&batt_card),
+        Some("battery"),
+        "Battery",
+        "battery-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &page(&mem_card),
+        Some("memory"),
+        "Memory",
+        "drive-harddisk-solidstate-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &page(&net_card),
+        Some("network"),
+        "Network",
+        "network-wireless-symbolic",
+    );
+    view_stack.add_titled_with_icon(
+        &page(&proc_card),
+        Some("process"),
+        "Process",
+        "view-list-symbolic",
+    );
+    let view_switcher = adw::ViewSwitcher::new();
+    view_switcher.set_stack(Some(&view_stack));
+    view_switcher.set_policy(adw::ViewSwitcherPolicy::Wide);
+    view_switcher.set_halign(gtk4::Align::Center);
+
+    let scroller = gtk4::ScrolledWindow::new();
+    scroller.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
+    scroller.set_child(Some(&view_stack));
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.add_top_bar(&view_switcher);
+    toolbar.set_content(Some(&scroller));
+    window.set_content(Some(&toolbar));
 
     let ui = Rc::new(Ui {
         core_load,
         core_freq,
-        cpu_core: core_label,
-        cpu_pkg: pkg_label,
-        cpu_temp: temp_label,
+        cpu_avg,
+        core_value,
+        pkg_value,
+        temp_value,
         rapl_hint,
         bat_bar,
+        batt_pct,
         bat_health,
         bat_charge,
         bat_discharge,
