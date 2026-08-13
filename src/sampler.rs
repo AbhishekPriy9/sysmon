@@ -156,7 +156,7 @@ impl Sampler {
 
     fn read_memory(&self) -> Memory {
         let s = read_file("/proc/meminfo").unwrap_or_default();
-        let (total_kb, avail_kb, swap_total_kb, swap_free_kb, _zswap, _zswapped) =
+        let (total_kb, free_kb, avail_kb, buffers_kb, cached_kb, swap_total_kb, swap_free_kb, _zswap, _zswapped) =
             parse_meminfo(&s);
         let zram_compressed_kb = read_file("/sys/block/zram0/mm_stat")
             .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()))
@@ -164,7 +164,9 @@ impl Sampler {
             .unwrap_or(0);
         Memory {
             total_kb,
+            free_kb,
             avail_kb,
+            cache_kb: buffers_kb + cached_kb,
             swap_total_kb,
             swap_free_kb,
             zram_compressed_kb,
@@ -227,6 +229,8 @@ mod tests {
         let snap = s.sample();
         assert_eq!(snap.cpu.cores.len(), 8);
         assert!(snap.mem.total_kb > 0);
+        assert!(snap.mem.free_kb > 0);
+        assert!(snap.mem.cache_kb > 0);
         assert!(!snap.procs.is_empty());
     }
 

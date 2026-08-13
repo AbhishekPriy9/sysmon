@@ -4,9 +4,12 @@ pub fn read_file(path: &str) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64) {
+pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64, u64, u64, u64) {
     let mut total = 0;
+    let mut free = 0;
     let mut avail = 0;
+    let mut buffers = 0;
+    let mut cached = 0;
     let mut swap_total = 0;
     let mut swap_free = 0;
     let mut zswap = 0;
@@ -17,7 +20,10 @@ pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64) {
         let val: u64 = it.next().and_then(|v| v.parse().ok()).unwrap_or(0);
         match key {
             "MemTotal:" => total = val,
+            "MemFree:" => free = val,
             "MemAvailable:" => avail = val,
+            "Buffers:" => buffers = val,
+            "Cached:" => cached = val,
             "SwapTotal:" => swap_total = val,
             "SwapFree:" => swap_free = val,
             "Zswap:" => zswap = val,
@@ -25,7 +31,7 @@ pub fn parse_meminfo(s: &str) -> (u64, u64, u64, u64, u64, u64) {
             _ => {}
         }
     }
-    (total, avail, swap_total, swap_free, zswap, zswapped)
+    (total, free, avail, buffers, cached, swap_total, swap_free, zswap, zswapped)
 }
 
 pub fn parse_cpu_line(line: &str) -> Option<(u64, u64)> {
@@ -114,8 +120,11 @@ mod tests {
 
     #[test]
     fn meminfo_parses_values() {
-        let s = "MemTotal:       15755096 kB\nMemFree:         1234567 kB\nMemAvailable:    9876543 kB\nSwapTotal:       20775844 kB\nSwapFree:        19000000 kB\nZswap:           100 kB\nZswapped:        20 kB\n";
-        assert_eq!(parse_meminfo(s), (15755096, 9876543, 20775844, 19000000, 100, 20));
+        let s = "MemTotal:       15755096 kB\nMemFree:         1234567 kB\nMemAvailable:    9876543 kB\nBuffers:         45678 kB\nCached:          789012 kB\nSwapTotal:       20775844 kB\nSwapFree:        19000000 kB\nZswap:           100 kB\nZswapped:        20 kB\n";
+        assert_eq!(
+            parse_meminfo(s),
+            (15755096, 1234567, 9876543, 45678, 789012, 20775844, 19000000, 100, 20)
+        );
     }
 
     #[test]

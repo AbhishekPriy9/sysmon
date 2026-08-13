@@ -28,7 +28,9 @@ pub struct Battery {
 
 pub struct Memory {
     pub total_kb: u64,
+    pub free_kb: u64,
     pub avail_kb: u64,
+    pub cache_kb: u64,
     pub swap_total_kb: u64,
     pub swap_free_kb: u64,
     pub zram_compressed_kb: u64,
