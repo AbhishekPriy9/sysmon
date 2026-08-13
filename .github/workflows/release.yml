@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if release tag already exists
+        id: check
+        run: |
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install system dependencies
+        if: steps.check.outputs.exists != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        if: steps.check.outputs.exists != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deb and git-cliff
+        if: steps.check.outputs.exists != 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,git-cliff
+
+      - name: Build release binary
+        if: steps.check.outputs.exists != 'true'
+        run: cargo build --release --verbose
+
+      - name: Build .deb package
+        if: steps.check.outputs.exists != 'true'
+        run: cargo deb
+
+      - name: Generate changelog
+        if: steps.check.outputs.exists != 'true'
+        run: git cliff --tag "${{ steps.version.outputs.tag }}" --unreleased --strip all > changelog.md
+
+      - name: Create GitHub release with .deb
+        if: steps.check.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: changelog.md
+          files: target/debian/*.deb

@@ -46,6 +46,12 @@ All hardware is auto-discovered at `Sampler::new()` time so the binary runs on a
 
 Licensing: this project ships under a **custom source-available license** (`LICENSE`), not an OSI open-source license — it permits reading/running/sharing verbatim copies but forbids modified redistribution, re-labeling/re-branding, and commercial sale. The icon is covered by the same terms.
 
+## Releases & versioning
+
+- Releases are automatic: pushing to `main`/`master` triggers `.github/workflows/release.yml`, which tags `v<Cargo.toml version>`, builds the `.deb`, generates changelog notes from conventional commits (git-cliff), and publishes a GitHub release with the `.deb` attached.
+- **Keep the version current:** whenever you make user-facing changes (features, fixes, breaking changes), bump `version` in `Cargo.toml` before pushing. If you don't, the release step sees the tag already exists and skips — so a forgotten bump means no release.
+- Use semver: `feat` → minor, `fix` → patch, breaking change → major. Commit messages must stay conventional-commit style (`feat:`, `fix:`, `chore:`, …) since the changelog is generated from them.
+
 ## Architecture (quick map)
 
 - `main.rs` — `adw::Application` entrypoint, app id `dev.sysmon.Sysmon`.
