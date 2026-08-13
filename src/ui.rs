@@ -23,11 +23,13 @@ progressbar.sysmon-core-bar trough { min-height: 6px; border-radius: 3px; }
 progressbar.sysmon-core-bar trough progress { min-height: 6px; border-radius: 3px; }
 progressbar.sysmon-battery-bar trough { min-height: 8px; border-radius: 4px; }
 progressbar.sysmon-battery-bar trough progress { min-height: 8px; border-radius: 4px; background-color: var(--success-bg-color); }
-progressbar.sysmon-mem-bar trough { min-height: 8px; border-radius: 4px; }
-progressbar.sysmon-mem-bar trough progress { min-height: 8px; border-radius: 4px; }
 .sysmon-warning { background-color: alpha(var(--warning-bg-color), 0.15); border: 1px solid alpha(var(--warning-bg-color), 0.4); border-radius: 8px; padding: 8px 10px; }
 .sysmon-warning image { color: var(--warning-color); }
 .sysmon-freeze:checked { background-color: var(--accent-bg-color); color: var(--accent-fg-color); }
+.sysmon-seg-bar { min-height: 10px; border-radius: 5px; background-color: alpha(var(--border-color), 0.4); }
+.sysmon-seg-used { border-radius: 5px; background-color: var(--accent-bg-color); }
+.sysmon-seg-cache { border-radius: 5px; background-color: var(--warning-bg-color); }
+.sysmon-seg-free { border-radius: 5px; }
 "#;
 
 struct Ui {
@@ -43,8 +45,15 @@ struct Ui {
     bat_health: gtk4::Label,
     bat_charge: gtk4::Label,
     bat_discharge: gtk4::Label,
-    mem_bar: ProgressBar,
-    mem_text: gtk4::Label,
+    mem_seg_bar: gtk4::Box,
+    mem_seg_used: gtk4::Box,
+    mem_seg_cache: gtk4::Box,
+    mem_seg_free: gtk4::Box,
+    mem_used: gtk4::Label,
+    mem_cache: gtk4::Label,
+    mem_free: gtk4::Label,
+    mem_swap: gtk4::Label,
+    mem_zram: gtk4::Label,
     net_down: gtk4::Label,
     net_up: gtk4::Label,
     apps_store: ListStore,
@@ -108,22 +117,32 @@ impl Ui {
             self.bat_discharge.set_text("—");
         }
 
-        let used = s.mem.total_kb.saturating_sub(s.mem.avail_kb);
-        let frac = if s.mem.total_kb == 0 {
-            0.0
-        } else {
-            used as f64 / s.mem.total_kb as f64
-        };
-        self.mem_bar.set_fraction(frac.clamp(0.0, 1.0));
+        let t = s.mem.total_kb;
+        let used = t.saturating_sub(s.mem.avail_kb);
+        let cache = s.mem.cache_kb;
+        let free = s.mem.free_kb;
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
-        self.mem_text.set_text(&format!(
-            "Used {} / {}\nSwap {} / {}\nZram {}",
-            human_kb(used),
-            human_kb(s.mem.total_kb),
+
+        self.mem_used.set_text(&human_kb(used));
+        self.mem_cache.set_text(&human_kb(cache));
+        self.mem_free.set_text(&human_kb(free));
+        self.mem_swap.set_text(&format!(
+            "{} / {}",
             human_kb(swap_used),
-            human_kb(s.mem.swap_total_kb),
-            human_kb(s.mem.zram_compressed_kb),
+            human_kb(s.mem.swap_total_kb)
         ));
+        self.mem_zram.set_text(&human_kb(s.mem.zram_compressed_kb));
+
+        let w = self.mem_seg_bar.width();
+        if t > 0 && w > 0 {
+            let avail_w = (w - 4).max(1) as f64;
+            let used_w = (avail_w * (used as f64 / t as f64)).round() as i32;
+            let cache_w = (avail_w * (cache as f64 / t as f64)).round() as i32;
+            let free_w = (avail_w as i32 - used_w - cache_w).max(0);
+            self.mem_seg_used.set_size_request(used_w, -1);
+            self.mem_seg_cache.set_size_request(cache_w, -1);
+            self.mem_seg_free.set_size_request(free_w, -1);
+        }
 
         self.net_down.set_text(&human_bps(s.net.down_bps));
         self.net_up.set_text(&human_bps(s.net.up_bps));
@@ -449,18 +468,36 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
 
     // Memory page
     let (mem_card, mbody, _mheader) = card("drive-harddisk-solidstate-symbolic", "Memory");
-    let mem_bar = ProgressBar::new();
-    mem_bar.add_css_class("sysmon-mem-bar");
-    mem_bar.set_fraction(0.0);
-    mem_bar.set_show_text(false);
-    mem_bar.set_hexpand(true);
-    mbody.append(&mem_bar);
-    let mem_text = gtk4::Label::new(Some("—"));
-    mem_text.set_xalign(0.0);
-    mem_text.add_css_class("dim-label");
-    mem_text.add_css_class("sysmon-card-trail");
-    mem_text.set_tooltip_text(Some("RAM in use, swap usage, and zram compressed swap size"));
-    mbody.append(&mem_text);
+    let mem_seg_bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+    mem_seg_bar.add_css_class("sysmon-seg-bar");
+    mem_seg_bar.set_hexpand(true);
+    let mem_seg_used = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    mem_seg_used.add_css_class("sysmon-seg-used");
+    mem_seg_used.set_size_request(0, -1);
+    let mem_seg_cache = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    mem_seg_cache.add_css_class("sysmon-seg-cache");
+    mem_seg_cache.set_size_request(0, -1);
+    let mem_seg_free = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    mem_seg_free.add_css_class("sysmon-seg-free");
+    mem_seg_free.set_size_request(0, -1);
+    mem_seg_bar.append(&mem_seg_used);
+    mem_seg_bar.append(&mem_seg_cache);
+    mem_seg_bar.append(&mem_seg_free);
+    mbody.append(&mem_seg_bar);
+
+    let mlist = boxed_list();
+    let (used_row, mem_used) =
+        row("Used", "MemTotal − MemAvailable, as System Monitor counts it");
+    mlist.append(&used_row);
+    let (cache_row, mem_cache) = row("Cache", "Buffers + Cached (reclaimable page cache)");
+    mlist.append(&cache_row);
+    let (free_row, mem_free) = row("Free", "MemFree (completely unused)");
+    mlist.append(&free_row);
+    let (swap_row, mem_swap) = row("Swap", "Swap used / total");
+    mlist.append(&swap_row);
+    let (zram_row, mem_zram) = row("Zram", "Compressed zram swap in use");
+    mlist.append(&zram_row);
+    mbody.append(&mlist);
 
     // Network page
     let (net_card, nbody, _nheader) = card("network-wireless-symbolic", "Network");
@@ -539,8 +576,15 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         bat_health,
         bat_charge,
         bat_discharge,
-        mem_bar,
-        mem_text,
+        mem_seg_bar,
+        mem_seg_used,
+        mem_seg_cache,
+        mem_seg_free,
+        mem_used,
+        mem_cache,
+        mem_free,
+        mem_swap,
+        mem_zram,
         net_down,
         net_up,
         apps_store,
