@@ -167,6 +167,7 @@ impl Ui {
                 store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
                 store.set_value(&it, 3, &a.proc_count.to_value());
                 store.set_value(&it, 4, &a.rss_kb.to_value());
+                store.set_value(&it, 5, &a.pids.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",").to_value());
             }
         } else {
             for p in procs {
@@ -229,6 +230,54 @@ fn boxed_list() -> gtk4::ListBox {
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk4::SelectionMode::None);
     list
+}
+
+fn action_popover(
+    anchor: &impl IsA<gtk4::Widget>,
+    label: &str,
+    activate: impl Fn() + 'static,
+) {
+    let pop = Rc::new(gtk4::Popover::new());
+    let btn = gtk4::Button::with_label(label);
+    btn.add_css_class("flat");
+    btn.set_hexpand(true);
+    let pop2 = Rc::clone(&pop);
+    btn.connect_clicked(move |_| {
+        pop2.popdown();
+        activate();
+    });
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    box_.append(&btn);
+    pop.set_child(Some(&box_));
+    pop.set_parent(anchor);
+    pop.present();
+}
+
+fn confirm_terminate(
+    window: &impl IsA<gtk4::Window>,
+    heading: &str,
+    body: &str,
+    mut pids: Vec<u32>,
+) {
+    let own = std::process::id();
+    pids.retain(|&p| p != own);
+    if pids.is_empty() {
+        return;
+    }
+    let dlg = adw::MessageDialog::new(Some(window), Some(heading), Some(body));
+    dlg.add_response("cancel", "Cancel");
+    dlg.add_response("end", "End");
+    dlg.set_default_response(Some("end"));
+    dlg.set_close_response("cancel");
+    dlg.connect_response(None, move |d, resp| {
+        if resp == "end" {
+            for pid in &pids {
+                crate::process::terminate(*pid);
+            }
+        }
+        d.close();
+    });
+    dlg.present();
 }
 
 fn trail_label() -> gtk4::Label {
@@ -295,13 +344,14 @@ fn add_text_column(
     view.append_column(&col);
 }
 
-fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
+fn build_apps_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
     let store = ListStore::new(&[
         glib::Type::STRING,
         glib::Type::U32,
         glib::Type::STRING,
         glib::Type::U32,
         glib::Type::U64,
+        glib::Type::STRING,
     ]);
     let view = gtk4::TreeView::with_model(&store);
     view.set_headers_clickable(true);
@@ -315,10 +365,10 @@ fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
     sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
     sw.set_height_request(300);
-    (store, sw)
+    (store, view, sw)
 }
 
-fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
+fn build_procs_table() -> (ListStore, gtk4::TreeView, gtk4::ScrolledWindow) {
     let store = ListStore::new(&[
         glib::Type::STRING,
         glib::Type::U32,
@@ -338,7 +388,7 @@ fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
     sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
     sw.set_child(Some(&view));
     sw.set_height_request(300);
-    (store, sw)
+    (store, view, sw)
 }
 
 pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
@@ -514,11 +564,73 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
     pheader.append(&switcher);
-    let (apps_store, apps_view) = build_apps_table();
-    let (procs_store, procs_view) = build_procs_table();
-    stack.add_titled(&apps_view, Some("apps"), "Apps");
-    stack.add_titled(&procs_view, Some("procs"), "Processes");
+    let (apps_store, apps_view, apps_sw) = build_apps_table();
+    let (procs_store, procs_view, procs_sw) = build_procs_table();
+    stack.add_titled(&apps_sw, Some("apps"), "Apps");
+    stack.add_titled(&procs_sw, Some("procs"), "Processes");
     pbody.append(&stack);
+
+    {
+        let win = window.clone();
+        let store = Rc::new(apps_store.clone());
+        let view = apps_view.clone();
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_pressed(move |_, _, x, y| {
+            let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
+                return;
+            };
+            let Some(iter) = store.iter(&path) else {
+                return;
+            };
+            view.selection().select_iter(&iter);
+            let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
+            let pids: Vec<u32> = store
+                .get_value(&iter, 5)
+                .get::<String>()
+                .unwrap_or_default()
+                .split(',')
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let heading = format!("Close app \"{name}\"?");
+            let body = format!("Its {} process(es) will be terminated.", pids.len());
+            let win = win.clone();
+            let heading = heading.clone();
+            let body = body.clone();
+            let pids = pids.clone();
+            action_popover(&view, "Close App", move || {
+                confirm_terminate(&win, &heading, &body, pids.clone())
+            });
+        });
+        apps_view.add_controller(gesture);
+    }
+
+    {
+        let win = window.clone();
+        let store = Rc::new(procs_store.clone());
+        let view = procs_view.clone();
+        let gesture = gtk4::GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_pressed(move |_, _, x, y| {
+            let Some((Some(path), _, _, _)) = view.path_at_pos(x as i32, y as i32) else {
+                return;
+            };
+            let Some(iter) = store.iter(&path) else {
+                return;
+            };
+            view.selection().select_iter(&iter);
+            let name: String = store.get_value(&iter, 0).get().unwrap_or_default();
+            let pid: u32 = store.get_value(&iter, 1).get().unwrap_or_default();
+            let heading = format!("End process \"{name}\" (PID {pid})?");
+            let body = "The process will be terminated.";
+            let win = win.clone();
+            let heading = heading.clone();
+            action_popover(&view, "End Process", move || {
+                confirm_terminate(&win, &heading, &body, vec![pid])
+            });
+        });
+        procs_view.add_controller(gesture);
+    }
 
     // View stack + switcher
     let view_stack = adw::ViewStack::new();
