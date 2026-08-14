@@ -32,6 +32,11 @@ pub struct Battery {
     pub status: String,
     pub cycle_count: Option<u64>,
     pub temp_c: Option<f64>,
+    pub design_capacity: Option<u64>,
+    pub full_capacity: Option<u64>,
+    pub remaining_capacity: Option<u64>,
+    pub capacity_unit: Option<String>,
+    pub capacity_voltage_uv: Option<u64>,
 }
 
 pub struct Memory {

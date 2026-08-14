@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::thread;
@@ -7,11 +7,76 @@ use std::time::Duration;
 use libadwaita as adw;
 
 use gtk4::prelude::*;
-use gtk4::{glib, ListStore, ProgressBar, TreeIter};
+use gtk4::{gio, glib, ProgressBar};
 use libadwaita::prelude::*;
 
 use crate::model::{AppRow, ProcRow, ProcSnapshot, QuickSnapshot};
 use crate::sampler::{online_count, Sampler};
+
+mod proc_item {
+    use glib::prelude::*;
+    use glib::subclass::prelude::*;
+    use std::cell::{Cell, RefCell};
+
+    #[derive(Default, glib::Properties)]
+    #[properties(wrapper_type = super::ProcItem)]
+    pub struct ProcItem {
+        #[property(get, set)]
+        name: RefCell<String>,
+        #[property(get, set)]
+        icon: RefCell<String>,
+        #[property(get, set)]
+        cpu: Cell<f64>,
+        #[property(get, set)]
+        mem: Cell<f64>,
+        #[property(get, set)]
+        rss: Cell<u64>,
+        #[property(get, set)]
+        pid: Cell<u32>,
+        #[property(get, set)]
+        count: Cell<u32>,
+        #[property(get, set)]
+        pids: RefCell<String>,
+    }
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for ProcItem {
+        const NAME: &'static str = "SysmonProcItem";
+        type Type = super::ProcItem;
+    }
+
+    #[glib::derived_properties]
+    impl ObjectImpl for ProcItem {}
+}
+
+glib::wrapper! {
+    pub struct ProcItem(ObjectSubclass<proc_item::ProcItem>);
+}
+
+impl ProcItem {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: &str,
+        icon: &str,
+        cpu: f64,
+        mem: f64,
+        rss: u64,
+        pid: u32,
+        count: u32,
+        pids: &str,
+    ) -> Self {
+        glib::Object::builder()
+            .property("name", name)
+            .property("icon", icon)
+            .property("cpu", cpu)
+            .property("mem", mem)
+            .property("rss", rss)
+            .property("pid", pid)
+            .property("count", count)
+            .property("pids", pids)
+            .build()
+    }
+}
 
 const CSS: &str = r#"
 .sysmon-card-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -34,7 +99,24 @@ progressbar.sysmon-battery-bar trough progress { min-height: 8px; border-radius:
 .sysmon-seg-free { border-radius: 5px; background-color: alpha(var(--border-color), 0.4); }
 .sysmon-legend { font-size: 11px; }
 .sysmon-legend-swatch { border-radius: 3px; min-width: 12px; min-height: 12px; }
+.sysmon-proc-view { background: transparent; }
+.sysmon-proc-view row { min-height: 30px; padding: 1px 6px; }
+.sysmon-proc-icon { border-radius: 6px; background-color: alpha(var(--border-color), 0.6); padding: 3px; color: var(--fg-color); }
+.sysmon-proc-name { font-weight: 600; }
+.sysmon-proc-num { font-variant-numeric: tabular-nums; }
 "#;
+
+struct ProcTable {
+    store: gio::ListStore,
+    filter: gtk4::CustomFilter,
+    #[allow(dead_code)]
+    filter_model: gtk4::FilterListModel,
+    #[allow(dead_code)]
+    sort_model: gtk4::SortListModel,
+    view: gtk4::ColumnView,
+    sw: gtk4::ScrolledWindow,
+    user_scrolled: Rc<Cell<bool>>,
+}
 
 struct Ui {
     core_load: Vec<ProgressBar>,
@@ -56,6 +138,9 @@ struct Ui {
     bat_cycle_row: adw::ActionRow,
     bat_temp: gtk4::Label,
     bat_temp_row: adw::ActionRow,
+    bat_design_cap: gtk4::Label,
+    bat_full_cap: gtk4::Label,
+    bat_remain_cap: gtk4::Label,
     mem_seg_bar: gtk4::Box,
     mem_seg_used: gtk4::Box,
     mem_seg_cache: gtk4::Box,
@@ -69,10 +154,10 @@ struct Ui {
     net_down: gtk4::Label,
     net_up: gtk4::Label,
     net_ifaces_box: gtk4::Box,
-    apps_store: ListStore,
-    procs_store: ListStore,
-    apps_iters: RefCell<HashMap<String, TreeIter>>,
-    procs_iters: RefCell<HashMap<u32, TreeIter>>,
+    apps_table: ProcTable,
+    procs_table: ProcTable,
+    apps_items: RefCell<HashMap<String, ProcItem>>,
+    procs_items: RefCell<HashMap<u32, ProcItem>>,
     net_iface_rows: RefCell<Vec<(String, adw::ActionRow, gtk4::Label)>>,
 }
 
@@ -146,6 +231,22 @@ impl Ui {
             );
             self.bat_cycle_row.set_visible(b.cycle_count.is_some());
             self.bat_temp_row.set_visible(b.temp_c.is_some());
+            let unit = b.capacity_unit.as_deref().unwrap_or("mAh");
+            self.bat_design_cap.set_text(
+                &b.design_capacity
+                    .map(|v| human_capacity_dual(v, unit, b.capacity_voltage_uv))
+                    .unwrap_or_else(|| "—".into()),
+            );
+            self.bat_full_cap.set_text(
+                &b.full_capacity
+                    .map(|v| human_capacity_dual(v, unit, b.capacity_voltage_uv))
+                    .unwrap_or_else(|| "—".into()),
+            );
+            self.bat_remain_cap.set_text(
+                &b.remaining_capacity
+                    .map(|v| human_capacity_dual(v, unit, b.capacity_voltage_uv))
+                    .unwrap_or_else(|| "—".into()),
+            );
         } else {
             self.bat_bar.set_fraction(0.0);
             self.batt_pct.set_text("—");
@@ -156,6 +257,9 @@ impl Ui {
             self.bat_temp.set_text("—");
             self.bat_cycle_row.set_visible(false);
             self.bat_temp_row.set_visible(false);
+            self.bat_design_cap.set_text("—");
+            self.bat_full_cap.set_text("—");
+            self.bat_remain_cap.set_text("—");
         }
 
         let t = s.mem.total_kb;
@@ -164,7 +268,13 @@ impl Ui {
         let free = s.mem.free_kb;
         let swap_used = s.mem.swap_total_kb.saturating_sub(s.mem.swap_free_kb);
 
-        let pct = |v: u64| format!(" ({:.0}%)", 100.0 * v as f64 / t as f64);
+        let pct = |v: u64| {
+            if t > 0 {
+                format!(" ({:.0}%)", 100.0 * v as f64 / t as f64)
+            } else {
+                String::new()
+            }
+        };
         self.mem_used.set_text(&format!("{}{}", human_kb(used), pct(used)));
         self.mem_avail.set_text(&format!(
             "{}{}",
@@ -201,79 +311,140 @@ impl Ui {
     fn refill_tables(&self, apps: &[AppRow], procs: &[ProcRow]) {
         self.update_apps(apps);
         self.update_procs(procs);
+
+        if let Some(sorter) = self.apps_table.view.sorter() {
+            sorter.changed(gtk4::SorterChange::Different);
+        }
+        if let Some(sorter) = self.procs_table.view.sorter() {
+            sorter.changed(gtk4::SorterChange::Different);
+        }
+
+        // Defer the scroll anchor to the next main-loop iteration so it runs
+        // *after* GTK has applied the re-sort layout — otherwise the virtualized
+        // list snaps back to its anchor before our scroll_to takes effect.
+        if !self.apps_table.user_scrolled.get() {
+            let view = self.apps_table.view.clone();
+            let adj = self.apps_table.sw.vadjustment();
+            glib::idle_add_local_once(move || {
+                adj.set_value(0.0);
+                view.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+            });
+        }
+
+        if !self.procs_table.user_scrolled.get() {
+            let view = self.procs_table.view.clone();
+            let adj = self.procs_table.sw.vadjustment();
+            glib::idle_add_local_once(move || {
+                adj.set_value(0.0);
+                view.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+            });
+        }
     }
 
     fn update_apps(&self, apps: &[AppRow]) {
-        let mut iters = self.apps_iters.borrow_mut();
-        let store = &self.apps_store;
+        let mut items = self.apps_items.borrow_mut();
+        let store = &self.apps_table.store;
         let mut seen = HashSet::with_capacity(apps.len());
+
         for a in apps {
-            seen.insert(a.name.clone());
-            let it = match iters.get(&a.name) {
-                Some(it) => it.clone(),
-                None => {
-                    let it = store.append();
-                    iters.insert(a.name.clone(), it.clone());
-                    it
+            seen.insert(&a.name);
+            match items.get(&a.name) {
+                Some(it) => {
+                    if (it.cpu() - a.cpu_pct).abs() > f64::EPSILON {
+                        it.set_cpu(a.cpu_pct);
+                    }
+                    if it.rss() != a.rss_kb {
+                        it.set_rss(a.rss_kb);
+                    }
+                    if it.count() != a.proc_count {
+                        it.set_count(a.proc_count);
+                    }
+                    if (it.mem() - a.mem_pct).abs() > f64::EPSILON {
+                        it.set_mem(a.mem_pct);
+                    }
                 }
-            };
-            store.set_value(&it, 0, &a.name.to_value());
-            store.set_value(&it, 1, &(a.cpu_pct.round() as u32).to_value());
-            store.set_value(&it, 2, &human_kb(a.rss_kb).to_value());
-            store.set_value(&it, 3, &a.proc_count.to_value());
-            store.set_value(&it, 4, &a.rss_kb.to_value());
-            store.set_value(
-                &it,
-                5,
-                &a.pids
-                    .iter()
-                    .map(|p| p.to_string())
-                    .collect::<Vec<_>>()
-                    .join(",")
-                    .to_value(),
-            );
-        }
-        let mut gone = Vec::new();
-        for (name, it) in iters.iter() {
-            if !seen.contains(name) {
-                store.remove(it);
-                gone.push(name.clone());
+                None => {
+                    let it = ProcItem::new(
+                        &a.name,
+                        &icon_name_for(&a.name),
+                        a.cpu_pct,
+                        a.mem_pct,
+                        a.rss_kb,
+                        0,
+                        a.proc_count,
+                        "",
+                    );
+                    store.append(&it);
+                    items.insert(a.name.clone(), it);
+                }
             }
         }
-        for n in gone {
-            iters.remove(&n);
+
+        let gone: Vec<String> = items
+            .keys()
+            .filter(|k| !seen.contains(*k))
+            .cloned()
+            .collect();
+        for name in gone {
+            if let Some(it) = items.remove(&name)
+                && let Some(pos) = store.find(&it)
+            {
+                store.remove(pos);
+            }
         }
     }
 
     fn update_procs(&self, procs: &[ProcRow]) {
-        let mut iters = self.procs_iters.borrow_mut();
-        let store = &self.procs_store;
+        let mut items = self.procs_items.borrow_mut();
+        let store = &self.procs_table.store;
         let mut seen = HashSet::with_capacity(procs.len());
+
         for p in procs {
             seen.insert(p.pid);
-            let it = match iters.get(&p.pid) {
-                Some(it) => it.clone(),
-                None => {
-                    let it = store.append();
-                    iters.insert(p.pid, it.clone());
-                    it
+            match items.get(&p.pid) {
+                Some(it) => {
+                    if it.name() != p.name {
+                        it.set_name(p.name.clone());
+                        it.set_icon(icon_name_for(&p.name));
+                    }
+                    if (it.cpu() - p.cpu_pct).abs() > f64::EPSILON {
+                        it.set_cpu(p.cpu_pct);
+                    }
+                    if it.rss() != p.rss_kb {
+                        it.set_rss(p.rss_kb);
+                    }
+                    if (it.mem() - p.mem_pct).abs() > f64::EPSILON {
+                        it.set_mem(p.mem_pct);
+                    }
                 }
-            };
-            store.set_value(&it, 0, &p.name.to_value());
-            store.set_value(&it, 1, &p.pid.to_value());
-            store.set_value(&it, 2, &(p.cpu_pct.round() as u32).to_value());
-            store.set_value(&it, 3, &human_kb(p.rss_kb).to_value());
-            store.set_value(&it, 4, &p.rss_kb.to_value());
-        }
-        let mut gone = Vec::new();
-        for (pid, it) in iters.iter() {
-            if !seen.contains(pid) {
-                store.remove(it);
-                gone.push(*pid);
+                None => {
+                    let it = ProcItem::new(
+                        &p.name,
+                        &icon_name_for(&p.name),
+                        p.cpu_pct,
+                        p.mem_pct,
+                        p.rss_kb,
+                        p.pid,
+                        1,
+                        "",
+                    );
+                    store.append(&it);
+                    items.insert(p.pid, it);
+                }
             }
         }
+
+        let gone: Vec<u32> = items
+            .keys()
+            .filter(|k| !seen.contains(*k))
+            .copied()
+            .collect();
         for pid in gone {
-            iters.remove(&pid);
+            if let Some(it) = items.remove(&pid)
+                && let Some(pos) = store.find(&it)
+            {
+                store.remove(pos);
+            }
         }
     }
 
@@ -316,7 +487,7 @@ impl Ui {
 
 fn setup_css() {
     let provider = gtk4::CssProvider::new();
-    provider.load_from_data(CSS);
+    provider.load_from_string(CSS);
     if let Some(display) = gtk4::gdk::Display::default() {
         gtk4::style_context_add_provider_for_display(
             &display,
@@ -413,79 +584,622 @@ fn human_kb(kb: u64) -> String {
     }
 }
 
-fn add_text_column(
-    view: &gtk4::TreeView,
-    title: &str,
-    model_idx: i32,
-    sort_idx: i32,
-    numeric: bool,
-    expand: bool,
-    min_width: i32,
-) {
-    let col = gtk4::TreeViewColumn::new();
-    col.set_title(title);
-    let cell = gtk4::CellRendererText::new();
-    cell.set_padding(10, 8);
-    if numeric {
-        cell.set_xalign(1.0);
-    } else {
-        cell.set_xalign(0.0);
-        cell.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+fn human_capacity_dual(value: u64, unit: &str, voltage_uv: Option<u64>) -> String {
+    let uv = voltage_uv.filter(|v| *v > 0);
+    let (mah, wh) = match unit {
+        "mAh" => {
+            let mah = value as f64 / 1_000.0;
+            let wh = match uv {
+                Some(uv) => mah / 1_000.0 * (uv as f64 / 1_000_000.0),
+                None => return format!("{mah:.0} mAh"),
+            };
+            (mah, wh)
+        }
+        "Wh" => {
+            let wh = value as f64 / 1_000_000.0;
+            let mah = match uv {
+                Some(uv) => value as f64 * 1_000.0 / uv as f64,
+                None => return format!("{wh:.2} Wh"),
+            };
+            (mah, wh)
+        }
+        _ => return format!("{value}"),
+    };
+    format!("{mah:.0} mAh ({wh:.2} Wh)")
+}
+
+fn proc_icon_candidates(name: &str) -> Vec<String> {
+    let lower = name.to_ascii_lowercase();
+    let aliases: &[(&str, &str)] = &[
+        ("code", "code"),
+        ("chrome", "google-chrome"),
+        ("chromium", "chromium"),
+        ("firefox", "firefox"),
+        ("gnome-shell", "gnome-shell"),
+        ("gnome-terminal", "utilities-terminal"),
+        ("nautilus", "org.gnome.Nautilus"),
+        ("thunderbird", "thunderbird"),
+        ("spotify", "spotify"),
+        ("discord", "discord"),
+        ("telegram", "telegram"),
+    ];
+    for &(k, v) in aliases {
+        if lower == *k || lower.starts_with(k) {
+            return vec![(*v).to_string(), "application-x-executable".to_string()];
+        }
     }
-    col.pack_start(&cell, true);
-    col.add_attribute(&cell, "text", model_idx);
-    col.set_sort_column_id(sort_idx);
-    col.set_resizable(true);
-    col.set_expand(expand);
-    col.set_min_width(min_width);
-    view.append_column(&col);
+    let mut candidates: Vec<String> = Vec::new();
+    candidates.push(lower.clone());
+    let stripped: String = lower.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+    if stripped != lower {
+        candidates.push(stripped);
+    }
+    candidates.push("application-x-executable".to_string());
+    candidates
 }
 
-fn build_apps_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[
-        glib::Type::STRING,
-        glib::Type::U32,
-        glib::Type::STRING,
-        glib::Type::U32,
-        glib::Type::U64,
-        glib::Type::STRING,
-    ]);
-    let view = gtk4::TreeView::with_model(&store);
-    view.set_headers_clickable(true);
-    view.set_grid_lines(gtk4::TreeViewGridLines::Both);
-    add_text_column(&view, "App", 0, 0, false, true, 180);
-    add_text_column(&view, "CPU %", 1, 1, true, false, 70);
-    add_text_column(&view, "MEM", 2, 4, false, false, 100);
-    add_text_column(&view, "Procs", 3, 3, true, false, 70);
-    store.set_sort_column_id(gtk4::SortColumn::Index(1), gtk4::SortType::Descending);
-    let sw = gtk4::ScrolledWindow::new();
-    sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
-    sw.set_child(Some(&view));
-    sw.set_height_request(300);
-    (store, sw)
+fn icon_name_for(name: &str) -> String {
+    let candidates = proc_icon_candidates(name);
+    let Some(display) = gtk4::gdk::Display::default() else {
+        return "application-x-executable".to_string();
+    };
+    let theme = gtk4::IconTheme::for_display(&display);
+    for c in &candidates {
+        if theme.has_icon(c) {
+            return c.clone();
+        }
+    }
+    "application-x-executable".to_string()
 }
 
-fn build_procs_table() -> (ListStore, gtk4::ScrolledWindow) {
-    let store = ListStore::new(&[
-        glib::Type::STRING,
-        glib::Type::U32,
-        glib::Type::U32,
-        glib::Type::STRING,
-        glib::Type::U64,
-    ]);
-    let view = gtk4::TreeView::with_model(&store);
-    view.set_headers_clickable(true);
-    view.set_grid_lines(gtk4::TreeViewGridLines::Both);
-    add_text_column(&view, "Name", 0, 0, false, true, 180);
-    add_text_column(&view, "PID", 1, 1, true, false, 80);
-    add_text_column(&view, "CPU %", 2, 2, true, false, 70);
-    add_text_column(&view, "MEM", 3, 4, false, false, 100);
-    store.set_sort_column_id(gtk4::SortColumn::Index(2), gtk4::SortType::Descending);
+fn proc_name_factory() -> gtk4::SignalListItemFactory {
+    let f = gtk4::SignalListItemFactory::new();
+    f.connect_setup(|_, item| {
+        let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        row.set_hexpand(true);
+        let img = gtk4::Image::new();
+        img.set_pixel_size(22);
+        img.set_valign(gtk4::Align::Center);
+        img.add_css_class("sysmon-proc-icon");
+        let label = gtk4::Label::new(None);
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        label.add_css_class("sysmon-proc-name");
+        row.append(&img);
+        row.append(&label);
+        item.downcast_ref::<gtk4::ListItem>().unwrap().set_child(Some(&row));
+    });
+    f.connect_bind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let row = li.child().unwrap().downcast::<gtk4::Box>().unwrap();
+        let pi = li.item().unwrap().downcast::<ProcItem>().unwrap();
+        let img = row.first_child().unwrap().downcast::<gtk4::Image>().unwrap();
+        let label = row.last_child().unwrap().downcast::<gtk4::Label>().unwrap();
+        img.set_icon_name(Some(pi.icon().as_str()));
+        label.set_text(&pi.name());
+
+        let label_weak = label.downgrade();
+        let img_weak = img.downgrade();
+        let h_name = pi.connect_notify_local(Some("name"), move |obj, _| {
+            if let Some(lbl) = label_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                lbl.set_text(&pi.name());
+            }
+        });
+        let h_icon = pi.connect_notify_local(Some("icon"), move |obj, _| {
+            if let Some(im) = img_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                im.set_icon_name(Some(pi.icon().as_str()));
+            }
+        });
+        unsafe {
+            li.set_data("name_handler", h_name);
+            li.set_data("icon_handler", h_icon);
+        }
+    });
+    f.connect_unbind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        if let Some(pi) = li.item().and_then(|it| it.downcast::<ProcItem>().ok()) {
+            if let Some(h) = unsafe { li.steal_data::<glib::SignalHandlerId>("name_handler") } {
+                pi.disconnect(h);
+            }
+            if let Some(h) = unsafe { li.steal_data::<glib::SignalHandlerId>("icon_handler") } {
+                pi.disconnect(h);
+            }
+        }
+    });
+    f
+}
+
+fn proc_cpu_factory() -> gtk4::SignalListItemFactory {
+    let f = gtk4::SignalListItemFactory::new();
+    f.connect_setup(|_, item| {
+        let label = gtk4::Label::new(None);
+        label.set_xalign(1.0);
+        label.add_css_class("sysmon-proc-num");
+        label.set_width_chars(7);
+        item.downcast_ref::<gtk4::ListItem>().unwrap().set_child(Some(&label));
+    });
+    f.connect_bind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let label = li.child().unwrap().downcast::<gtk4::Label>().unwrap();
+        let pi = li.item().unwrap().downcast::<ProcItem>().unwrap();
+        label.set_text(&format!("{:.1}%", pi.cpu()));
+
+        let label_weak = label.downgrade();
+        let handler = pi.connect_notify_local(Some("cpu"), move |obj, _| {
+            if let Some(lbl) = label_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                lbl.set_text(&format!("{:.1}%", pi.cpu()));
+            }
+        });
+        unsafe {
+            li.set_data("cpu_handler", handler);
+        }
+    });
+    f.connect_unbind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        if let Some(pi) = li.item().and_then(|it| it.downcast::<ProcItem>().ok())
+            && let Some(handler) = unsafe { li.steal_data::<glib::SignalHandlerId>("cpu_handler") }
+        {
+            pi.disconnect(handler);
+        }
+    });
+    f
+}
+
+fn proc_mem_factory() -> gtk4::SignalListItemFactory {
+    let f = gtk4::SignalListItemFactory::new();
+    f.connect_setup(|_, item| {
+        let label = gtk4::Label::new(None);
+        label.set_xalign(1.0);
+        label.add_css_class("sysmon-proc-num");
+        label.set_width_chars(9);
+        item.downcast_ref::<gtk4::ListItem>().unwrap().set_child(Some(&label));
+    });
+    f.connect_bind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let label = li.child().unwrap().downcast::<gtk4::Label>().unwrap();
+        let pi = li.item().unwrap().downcast::<ProcItem>().unwrap();
+        label.set_text(&human_kb(pi.rss()));
+
+        let label_weak = label.downgrade();
+        let handler = pi.connect_notify_local(Some("rss"), move |obj, _| {
+            if let Some(lbl) = label_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                lbl.set_text(&human_kb(pi.rss()));
+            }
+        });
+        unsafe {
+            li.set_data("mem_handler", handler);
+        }
+    });
+    f.connect_unbind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        if let Some(pi) = li.item().and_then(|it| it.downcast::<ProcItem>().ok())
+            && let Some(handler) = unsafe { li.steal_data::<glib::SignalHandlerId>("mem_handler") }
+        {
+            pi.disconnect(handler);
+        }
+    });
+    f
+}
+
+fn proc_pid_factory() -> gtk4::SignalListItemFactory {
+    let f = gtk4::SignalListItemFactory::new();
+    f.connect_setup(|_, item| {
+        let label = gtk4::Label::new(None);
+        label.set_xalign(1.0);
+        label.add_css_class("sysmon-proc-num");
+        item.downcast_ref::<gtk4::ListItem>().unwrap().set_child(Some(&label));
+    });
+    f.connect_bind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let label = li.child().unwrap().downcast::<gtk4::Label>().unwrap();
+        let pi = li.item().unwrap().downcast::<ProcItem>().unwrap();
+        label.set_text(&pi.pid().to_string());
+
+        let label_weak = label.downgrade();
+        let handler = pi.connect_notify_local(Some("pid"), move |obj, _| {
+            if let Some(lbl) = label_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                lbl.set_text(&pi.pid().to_string());
+            }
+        });
+        unsafe {
+            li.set_data("pid_handler", handler);
+        }
+    });
+    f.connect_unbind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        if let Some(pi) = li.item().and_then(|it| it.downcast::<ProcItem>().ok())
+            && let Some(handler) = unsafe { li.steal_data::<glib::SignalHandlerId>("pid_handler") }
+        {
+            pi.disconnect(handler);
+        }
+    });
+    f
+}
+
+fn proc_count_factory() -> gtk4::SignalListItemFactory {
+    let f = gtk4::SignalListItemFactory::new();
+    f.connect_setup(|_, item| {
+        let label = gtk4::Label::new(None);
+        label.set_xalign(1.0);
+        label.add_css_class("sysmon-proc-num");
+        item.downcast_ref::<gtk4::ListItem>().unwrap().set_child(Some(&label));
+    });
+    f.connect_bind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        let label = li.child().unwrap().downcast::<gtk4::Label>().unwrap();
+        let pi = li.item().unwrap().downcast::<ProcItem>().unwrap();
+        label.set_text(&pi.count().to_string());
+
+        let label_weak = label.downgrade();
+        let handler = pi.connect_notify_local(Some("count"), move |obj, _| {
+            if let Some(lbl) = label_weak.upgrade() {
+                let pi = obj.downcast_ref::<ProcItem>().unwrap();
+                lbl.set_text(&pi.count().to_string());
+            }
+        });
+        unsafe {
+            li.set_data("count_handler", handler);
+        }
+    });
+    f.connect_unbind(|_, item| {
+        let li = item.downcast_ref::<gtk4::ListItem>().unwrap();
+        if let Some(pi) = li.item().and_then(|it| it.downcast::<ProcItem>().ok())
+            && let Some(handler) = unsafe { li.steal_data::<glib::SignalHandlerId>("count_handler") }
+        {
+            pi.disconnect(handler);
+        }
+    });
+    f
+}
+
+fn build_apps_table(search_query: Rc<RefCell<String>>) -> ProcTable {
+    let store = gio::ListStore::new::<ProcItem>();
+    let user_scrolled = Rc::new(Cell::new(false));
+
+    let sq = Rc::clone(&search_query);
+    let filter = gtk4::CustomFilter::new(move |obj| {
+        let q = sq.borrow();
+        if q.is_empty() {
+            return true;
+        }
+        let Some(it) = obj.downcast_ref::<ProcItem>() else {
+            return true;
+        };
+        let q_lower = q.to_lowercase();
+        it.name().to_lowercase().contains(&q_lower)
+    });
+    let filter_model = gtk4::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+    filter_model.set_incremental(false);
+
+    let sort_model = gtk4::SortListModel::new(Some(filter_model.clone()), None::<gtk4::Sorter>);
+    sort_model.set_incremental(false);
+
+    let selection = gtk4::NoSelection::new(Some(sort_model.clone()));
+    let view = gtk4::ColumnView::new(Some(selection));
+    view.add_css_class("sysmon-proc-view");
+    view.add_css_class("data-table");
+    view.set_show_column_separators(false);
+    view.set_margin_end(8);
+
     let sw = gtk4::ScrolledWindow::new();
     sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
+    sw.set_vexpand(true);
+    sw.set_min_content_height(160);
+
+    let scroll_ctrl = gtk4::EventControllerScroll::new(
+        gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::KINETIC,
+    );
+    let us_clone = Rc::clone(&user_scrolled);
+    let sw_weak = sw.downgrade();
+    scroll_ctrl.connect_scroll(move |_, _, dy| {
+        if let Some(sw) = sw_weak.upgrade() {
+            let val = sw.vadjustment().value();
+            if dy < 0.0 && val <= 5.0 {
+                us_clone.set(false);
+            } else if dy > 0.0 {
+                us_clone.set(true);
+            }
+        }
+        glib::Propagation::Proceed
+    });
+    sw.add_controller(scroll_ctrl);
+
+    let us_clone2 = Rc::clone(&user_scrolled);
+    sw.vadjustment().connect_value_changed(move |adj| {
+        if adj.value() <= 2.0 {
+            us_clone2.set(false);
+        }
+    });
+
+    let name_col = gtk4::ColumnViewColumn::new(Some("App"), Some(proc_name_factory()));
+    name_col.set_resizable(true);
+    name_col.set_expand(true);
+    let name_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        a.name().to_lowercase().cmp(&b.name().to_lowercase()).into()
+    });
+    name_col.set_sorter(Some(&name_sorter));
+    view.append_column(&name_col);
+
+    let cpu_col = gtk4::ColumnViewColumn::new(Some("% of total CPU"), Some(proc_cpu_factory()));
+    cpu_col.set_resizable(true);
+    cpu_col.set_fixed_width(120);
+    let cpu_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.cpu().partial_cmp(&b.cpu()) {
+            Some(std::cmp::Ordering::Equal) | None => {
+                a.name().to_lowercase().cmp(&b.name().to_lowercase()).into()
+            }
+            Some(ord) => ord.into(),
+        }
+    });
+    cpu_col.set_sorter(Some(&cpu_sorter));
+    view.append_column(&cpu_col);
+
+    let mem_col = gtk4::ColumnViewColumn::new(Some("MEM"), Some(proc_mem_factory()));
+    mem_col.set_resizable(true);
+    mem_col.set_fixed_width(100);
+    let mem_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.rss().cmp(&b.rss()) {
+            std::cmp::Ordering::Equal => {
+                a.name().to_lowercase().cmp(&b.name().to_lowercase()).into()
+            }
+            ord => ord.into(),
+        }
+    });
+    mem_col.set_sorter(Some(&mem_sorter));
+    view.append_column(&mem_col);
+
+    let procs_col = gtk4::ColumnViewColumn::new(Some("Procs"), Some(proc_count_factory()));
+    procs_col.set_resizable(true);
+    procs_col.set_fixed_width(70);
+    let procs_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.count().cmp(&b.count()) {
+            std::cmp::Ordering::Equal => {
+                a.name().to_lowercase().cmp(&b.name().to_lowercase()).into()
+            }
+            ord => ord.into(),
+        }
+    });
+    procs_col.set_sorter(Some(&procs_sorter));
+    view.append_column(&procs_col);
+
+    view.sort_by_column(Some(&cpu_col), gtk4::SortType::Descending);
+    sort_model.set_sorter(view.sorter().as_ref());
+
+    if let Some(cv_sorter) = view.sorter() {
+        let view_weak = view.downgrade();
+        let sw_weak = sw.downgrade();
+        let us_clone = Rc::clone(&user_scrolled);
+        cv_sorter.connect_notify_local(Some("primary-sort-column"), move |_, _| {
+            // Set immediately so refill_tables respects it on next tick.
+            us_clone.set(false);
+            // Defer the actual scroll until GTK has finished applying the re-sort.
+            let vw = view_weak.clone();
+            let sw2 = sw_weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(sw) = sw2.upgrade() {
+                    sw.vadjustment().set_value(0.0);
+                }
+                if let Some(v) = vw.upgrade() {
+                    v.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+                }
+            });
+        });
+        let view_weak2 = view.downgrade();
+        let sw_weak2 = sw.downgrade();
+        let us_clone2 = Rc::clone(&user_scrolled);
+        cv_sorter.connect_notify_local(Some("primary-sort-order"), move |_, _| {
+            us_clone2.set(false);
+            let vw = view_weak2.clone();
+            let sw2 = sw_weak2.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(sw) = sw2.upgrade() {
+                    sw.vadjustment().set_value(0.0);
+                }
+                if let Some(v) = vw.upgrade() {
+                    v.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+                }
+            });
+        });
+    }
+
     sw.set_child(Some(&view));
-    sw.set_height_request(300);
-    (store, sw)
+
+    ProcTable {
+        store,
+        filter,
+        filter_model,
+        sort_model,
+        view,
+        sw,
+        user_scrolled,
+    }
+}
+
+fn build_procs_table(search_query: Rc<RefCell<String>>) -> ProcTable {
+    let store = gio::ListStore::new::<ProcItem>();
+    let user_scrolled = Rc::new(Cell::new(false));
+
+    let sq = Rc::clone(&search_query);
+    let filter = gtk4::CustomFilter::new(move |obj| {
+        let q = sq.borrow();
+        if q.is_empty() {
+            return true;
+        }
+        let Some(it) = obj.downcast_ref::<ProcItem>() else {
+            return true;
+        };
+        let q_lower = q.to_lowercase();
+        it.name().to_lowercase().contains(&q_lower) || it.pid().to_string().contains(&q_lower)
+    });
+    let filter_model = gtk4::FilterListModel::new(Some(store.clone()), Some(filter.clone()));
+    filter_model.set_incremental(false);
+
+    let sort_model = gtk4::SortListModel::new(Some(filter_model.clone()), None::<gtk4::Sorter>);
+    sort_model.set_incremental(false);
+
+    let selection = gtk4::NoSelection::new(Some(sort_model.clone()));
+    let view = gtk4::ColumnView::new(Some(selection));
+    view.add_css_class("sysmon-proc-view");
+    view.add_css_class("data-table");
+    view.set_show_column_separators(false);
+    view.set_margin_end(8);
+
+    let sw = gtk4::ScrolledWindow::new();
+    sw.set_policy(gtk4::PolicyType::Automatic, gtk4::PolicyType::Automatic);
+    sw.set_vexpand(true);
+    sw.set_min_content_height(160);
+
+    let scroll_ctrl = gtk4::EventControllerScroll::new(
+        gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::KINETIC,
+    );
+    let us_clone = Rc::clone(&user_scrolled);
+    let sw_weak = sw.downgrade();
+    scroll_ctrl.connect_scroll(move |_, _, dy| {
+        if let Some(sw) = sw_weak.upgrade() {
+            let val = sw.vadjustment().value();
+            if dy < 0.0 && val <= 5.0 {
+                us_clone.set(false);
+            } else if dy > 0.0 {
+                us_clone.set(true);
+            }
+        }
+        glib::Propagation::Proceed
+    });
+    sw.add_controller(scroll_ctrl);
+
+    let us_clone2 = Rc::clone(&user_scrolled);
+    sw.vadjustment().connect_value_changed(move |adj| {
+        if adj.value() <= 2.0 {
+            us_clone2.set(false);
+        }
+    });
+
+    let name_col = gtk4::ColumnViewColumn::new(Some("Name"), Some(proc_name_factory()));
+    name_col.set_resizable(true);
+    name_col.set_expand(true);
+    let name_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.name().to_lowercase().cmp(&b.name().to_lowercase()) {
+            std::cmp::Ordering::Equal => a.pid().cmp(&b.pid()).into(),
+            ord => ord.into(),
+        }
+    });
+    name_col.set_sorter(Some(&name_sorter));
+    view.append_column(&name_col);
+
+    let pid_col = gtk4::ColumnViewColumn::new(Some("PID"), Some(proc_pid_factory()));
+    pid_col.set_resizable(true);
+    pid_col.set_fixed_width(80);
+    let pid_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        a.pid().cmp(&b.pid()).into()
+    });
+    pid_col.set_sorter(Some(&pid_sorter));
+    view.append_column(&pid_col);
+
+    let cpu_col = gtk4::ColumnViewColumn::new(Some("% of total CPU"), Some(proc_cpu_factory()));
+    cpu_col.set_resizable(true);
+    cpu_col.set_fixed_width(120);
+    let cpu_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.cpu().partial_cmp(&b.cpu()) {
+            Some(std::cmp::Ordering::Equal) | None => {
+                match a.name().to_lowercase().cmp(&b.name().to_lowercase()) {
+                    std::cmp::Ordering::Equal => a.pid().cmp(&b.pid()).into(),
+                    ord => ord.into(),
+                }
+            }
+            Some(ord) => ord.into(),
+        }
+    });
+    cpu_col.set_sorter(Some(&cpu_sorter));
+    view.append_column(&cpu_col);
+
+    let mem_col = gtk4::ColumnViewColumn::new(Some("MEM"), Some(proc_mem_factory()));
+    mem_col.set_resizable(true);
+    mem_col.set_fixed_width(100);
+    let mem_sorter = gtk4::CustomSorter::new(|a, b| {
+        let a = a.downcast_ref::<ProcItem>().unwrap();
+        let b = b.downcast_ref::<ProcItem>().unwrap();
+        match a.rss().cmp(&b.rss()) {
+            std::cmp::Ordering::Equal => {
+                match a.name().to_lowercase().cmp(&b.name().to_lowercase()) {
+                    std::cmp::Ordering::Equal => a.pid().cmp(&b.pid()).into(),
+                    ord => ord.into(),
+                }
+            }
+            ord => ord.into(),
+        }
+    });
+    mem_col.set_sorter(Some(&mem_sorter));
+    view.append_column(&mem_col);
+
+    view.sort_by_column(Some(&cpu_col), gtk4::SortType::Descending);
+    sort_model.set_sorter(view.sorter().as_ref());
+
+    if let Some(cv_sorter) = view.sorter() {
+        let view_weak = view.downgrade();
+        let sw_weak = sw.downgrade();
+        let us_clone = Rc::clone(&user_scrolled);
+        cv_sorter.connect_notify_local(Some("primary-sort-column"), move |_, _| {
+            us_clone.set(false);
+            let vw = view_weak.clone();
+            let sw2 = sw_weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(sw) = sw2.upgrade() {
+                    sw.vadjustment().set_value(0.0);
+                }
+                if let Some(v) = vw.upgrade() {
+                    v.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+                }
+            });
+        });
+        let view_weak2 = view.downgrade();
+        let sw_weak2 = sw.downgrade();
+        let us_clone2 = Rc::clone(&user_scrolled);
+        cv_sorter.connect_notify_local(Some("primary-sort-order"), move |_, _| {
+            us_clone2.set(false);
+            let vw = view_weak2.clone();
+            let sw2 = sw_weak2.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(sw) = sw2.upgrade() {
+                    sw.vadjustment().set_value(0.0);
+                }
+                if let Some(v) = vw.upgrade() {
+                    v.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+                }
+            });
+        });
+    }
+
+    sw.set_child(Some(&view));
+
+    ProcTable {
+        store,
+        filter,
+        filter_model,
+        sort_model,
+        view,
+        sw,
+        user_scrolled,
+    }
 }
 
 pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
@@ -643,6 +1357,24 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     blist.append(&cycle_row);
     let (temp_row_bat, bat_temp) = row("Temperature", "Battery temperature");
     blist.append(&temp_row_bat);
+    let (design_cap_row, bat_design_cap) = row(
+        "Design capacity",
+        "Rated capacity when the battery was new (charge_full_design). Shown in mAh for \
+         charge-based batteries or Wh for energy-based ones.",
+    );
+    blist.append(&design_cap_row);
+    let (full_cap_row, bat_full_cap) = row(
+        "Full capacity",
+        "Current maximum capacity when fully charged (charge_full). Degrades below the \
+         design capacity as the battery ages; the gap is the health loss.",
+    );
+    blist.append(&full_cap_row);
+    let (remain_cap_row, bat_remain_cap) = row(
+        "Remaining",
+        "Charge currently stored in the battery (charge_now). Drops while discharging and \
+         rises while charging.",
+    );
+    blist.append(&remain_cap_row);
     bbody.append(&blist);
 
     let (mem_card, mbody, _mheader) = card("drive-harddisk-solidstate-symbolic", "Memory");
@@ -700,15 +1432,49 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
     nbody.append(&net_ifaces_box);
 
     let (proc_card, pbody, pheader) = card("view-list-symbolic", "Processes");
+    let search_query = Rc::new(RefCell::new(String::new()));
+    let apps_table = build_apps_table(Rc::clone(&search_query));
+    let procs_table = build_procs_table(Rc::clone(&search_query));
+
+    let search_entry = gtk4::SearchEntry::new();
+    search_entry.set_placeholder_text(Some("Search processes…"));
+    search_entry.set_max_width_chars(20);
+    let apps_filter_clone = apps_table.filter.clone();
+    let procs_filter_clone = procs_table.filter.clone();
+    let sq_clone = Rc::clone(&search_query);
+    let apps_view_clone = apps_table.view.clone();
+    let procs_view_clone = procs_table.view.clone();
+    let apps_us_clone = Rc::clone(&apps_table.user_scrolled);
+    let procs_us_clone = Rc::clone(&procs_table.user_scrolled);
+    let apps_adj_clone = apps_table.sw.vadjustment();
+    let procs_adj_clone = procs_table.sw.vadjustment();
+    search_entry.connect_search_changed(move |entry| {
+        let text = entry.text().trim().to_string();
+        *sq_clone.borrow_mut() = text;
+        apps_filter_clone.changed(gtk4::FilterChange::Different);
+        procs_filter_clone.changed(gtk4::FilterChange::Different);
+        apps_us_clone.set(false);
+        procs_us_clone.set(false);
+        apps_adj_clone.set_value(0.0);
+        procs_adj_clone.set_value(0.0);
+        apps_view_clone.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+        procs_view_clone.scroll_to(0, None, gtk4::ListScrollFlags::NONE, None);
+    });
+
     let stack = gtk4::Stack::new();
     let switcher = gtk4::StackSwitcher::new();
     switcher.set_stack(Some(&stack));
+
     pheader.append(&switcher);
-    let (apps_store, apps_sw) = build_apps_table();
-    let (procs_store, procs_sw) = build_procs_table();
-    stack.add_titled(&apps_sw, Some("apps"), "Apps");
-    stack.add_titled(&procs_sw, Some("procs"), "Processes");
+    pheader.append(&search_entry);
+
+    stack.add_titled(&apps_table.sw, Some("apps"), "Apps");
+    stack.add_titled(&procs_table.sw, Some("procs"), "Processes");
     pbody.append(&stack);
+
+    proc_card.set_vexpand(true);
+    pbody.set_vexpand(true);
+    stack.set_vexpand(true);
 
     let view_stack = adw::ViewStack::new();
     view_stack.set_vhomogeneous(false);
@@ -731,8 +1497,10 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         "Network",
         "network-wireless-symbolic",
     );
+    let proc_page = page(&proc_card);
+    proc_page.set_vexpand(true);
     view_stack.add_titled_with_icon(
-        &page(&proc_card),
+        &proc_page,
         Some("process"),
         "Process",
         "view-list-symbolic",
@@ -773,6 +1541,9 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         bat_cycle_row: cycle_row,
         bat_temp,
         bat_temp_row: temp_row_bat,
+        bat_design_cap,
+        bat_full_cap,
+        bat_remain_cap,
         mem_seg_bar,
         mem_seg_used,
         mem_seg_cache,
@@ -786,46 +1557,200 @@ pub fn build(app: &adw::Application) -> adw::ApplicationWindow {
         net_down,
         net_up,
         net_ifaces_box,
-        apps_store,
-        procs_store,
-        apps_iters: RefCell::new(HashMap::new()),
-        procs_iters: RefCell::new(HashMap::new()),
+        apps_table,
+        procs_table,
+        apps_items: RefCell::new(HashMap::new()),
+        procs_items: RefCell::new(HashMap::new()),
         net_iface_rows: RefCell::new(Vec::new()),
     });
 
-    let (quick_sender, quick_receiver) = std::sync::mpsc::channel::<QuickSnapshot>();
-    let (proc_sender, proc_receiver) = std::sync::mpsc::channel::<ProcSnapshot>();
-    let ui2 = Rc::clone(&ui);
-    let frozen_loop = Rc::clone(&frozen);
-    glib::timeout_add_local(Duration::from_millis(250), move || {
-        while let Ok(s) = quick_receiver.try_recv() {
-            if !frozen_loop.get() {
-                ui2.update_quick(&s);
+    enum WorkerMsg {
+        Snapshot(Box<QuickSnapshot>, ProcSnapshot),
+        Error(String),
+    }
+
+    let (sender, receiver) = std::sync::mpsc::channel::<WorkerMsg>();
+    let ui_receiver = Rc::clone(&ui);
+    let frozen_recv = Rc::clone(&frozen);
+    let toast_overlay_err = toast_overlay.clone();
+
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        while let Ok(msg) = receiver.try_recv() {
+            match msg {
+                WorkerMsg::Snapshot(quick, procs) => {
+                    if !frozen_recv.get() {
+                        ui_receiver.update_quick(&quick);
+                        ui_receiver.refill_tables(&procs.apps, &procs.procs);
+                    }
+                }
+                WorkerMsg::Error(err) => {
+                    let toast = adw::Toast::new(&format!("Monitoring stopped: {err}"));
+                    toast.set_timeout(0);
+                    toast_overlay_err.add_toast(toast);
+                }
             }
         }
         glib::ControlFlow::Continue
     });
-    let ui3 = Rc::clone(&ui);
-    let frozen_proc = Rc::clone(&frozen);
-    glib::timeout_add_local(Duration::from_millis(250), move || {
-        while let Ok(s) = proc_receiver.try_recv() {
-            if !frozen_proc.get() {
-                ui3.refill_tables(&s.apps, &s.procs);
-            }
-        }
-        glib::ControlFlow::Continue
-    });
+
     thread::spawn(move || {
-        let mut sampler = Sampler::new();
+        let mut sampler =
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(Sampler::new)) {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = sender.send(WorkerMsg::Error(format!("sampler init failed: {e:?}")));
+                    return;
+                }
+            };
         loop {
             thread::sleep(Duration::from_millis(1000));
-            if quick_sender.send(sampler.sample_quick()).is_err()
-                || proc_sender.send(sampler.sample_procs()).is_err()
-            {
-                break;
+            let sampled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (sampler.sample_quick(), sampler.sample_procs())
+            }));
+            match sampled {
+                Ok((quick, procs)) => {
+                    if sender.send(WorkerMsg::Snapshot(Box::new(quick), procs)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = sender.send(WorkerMsg::Error(format!("sampler crashed: {e:?}")));
+                    break;
+                }
             }
         }
     });
 
     window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn human_capacity_dual_formats_charge_and_energy() {
+        assert_eq!(
+            human_capacity_dual(52_046_000, "mAh", Some(4_200_000)),
+            "52046 mAh (218.59 Wh)"
+        );
+        assert_eq!(
+            human_capacity_dual(82_000_000, "Wh", Some(13_000_000)),
+            "6308 mAh (82.00 Wh)"
+        );
+    }
+
+    #[test]
+    fn human_capacity_dual_edge_cases() {
+        assert_eq!(human_capacity_dual(52_046_000, "mAh", None), "52046 mAh");
+        assert_eq!(human_capacity_dual(82_000_000, "Wh", None), "82.00 Wh");
+        assert_eq!(human_capacity_dual(52_046_000, "mAh", Some(0)), "52046 mAh");
+        assert_eq!(human_capacity_dual(123, "bogus", Some(4_200_000)), "123");
+        assert_eq!(human_capacity_dual(0, "mAh", Some(4_200_000)), "0 mAh (0.00 Wh)");
+    }
+
+    #[test]
+    fn proc_icon_candidates_resolves_aliases_and_falls_back() {
+        let c = proc_icon_candidates("Chrome");
+        assert!(c.contains(&"google-chrome".to_string()));
+        let c2 = proc_icon_candidates("zzz-totally-not-real");
+        assert!(c2.contains(&"zzz-totally-not-real".to_string()));
+        assert_eq!(c2.last().unwrap(), "application-x-executable");
+        let c3 = proc_icon_candidates("python3");
+        assert!(c3.contains(&"python".to_string()));
+    }
+
+    #[test]
+    fn process_table_sorting_and_filtering() {
+        if gtk4::init().is_err() || !gtk4::is_initialized_main_thread() {
+            eprintln!("skipping: GTK could not be initialized on main thread");
+            return;
+        }
+
+        // Test 1: Sorting and in-place refresh with ColumnView
+        let store: gio::ListStore = gio::ListStore::new::<ProcItem>();
+        let a = ProcItem::new("a", "", 5.0, 0.0, 0, 1, 1, "1");
+        let b = ProcItem::new("b", "", 3.0, 0.0, 0, 2, 1, "2");
+        let c = ProcItem::new("c", "", 1.0, 0.0, 0, 3, 1, "3");
+        for it in [&a, &b, &c] {
+            store.append(it);
+        }
+        let sort_model = gtk4::SortListModel::new(Some(store.clone()), None::<gtk4::Sorter>);
+        sort_model.set_incremental(false);
+        let selection = gtk4::NoSelection::new(Some(sort_model.clone()));
+        let view = gtk4::ColumnView::new(Some(selection));
+
+        let cpu_sorter = gtk4::CustomSorter::new(|a, b| {
+            let a = a.downcast_ref::<ProcItem>().unwrap();
+            let b = b.downcast_ref::<ProcItem>().unwrap();
+            a.cpu().partial_cmp(&b.cpu()).unwrap_or(std::cmp::Ordering::Equal).into()
+        });
+        let cpu_col = gtk4::ColumnViewColumn::new(Some("CPU"), Some(proc_cpu_factory()));
+        cpu_col.set_sorter(Some(&cpu_sorter));
+        view.append_column(&cpu_col);
+
+        view.sort_by_column(Some(&cpu_col), gtk4::SortType::Descending);
+        sort_model.set_sorter(view.sorter().as_ref());
+
+        let order = |sm: &gtk4::SortListModel| -> Vec<String> {
+            (0..sm.n_items())
+                .map(|i| sm.item(i).unwrap().downcast::<ProcItem>().unwrap().name())
+                .collect()
+        };
+
+        assert_eq!(order(&sort_model), vec!["a", "b", "c"]);
+
+        a.set_cpu(1.0);
+        b.set_cpu(5.0);
+        c.set_cpu(3.0);
+        assert_eq!(order(&sort_model), vec!["a", "b", "c"]);
+
+        if let Some(sorter) = view.sorter() {
+            sorter.changed(gtk4::SorterChange::Different);
+        }
+        assert_eq!(order(&sort_model), vec!["b", "c", "a"]);
+
+        // Test 2: Search filtering
+        let fstore: gio::ListStore = gio::ListStore::new::<ProcItem>();
+        let fa = ProcItem::new("Firefox", "", 5.0, 0.0, 0, 100, 1, "100");
+        let fb = ProcItem::new("Chrome", "", 3.0, 0.0, 0, 200, 1, "200");
+        let fc = ProcItem::new("Terminal", "", 1.0, 0.0, 0, 300, 1, "300");
+        for it in [&fa, &fb, &fc] {
+            fstore.append(it);
+        }
+
+        let query = Rc::new(RefCell::new(String::new()));
+        let q_clone = Rc::clone(&query);
+        let filter = gtk4::CustomFilter::new(move |obj| {
+            let q = q_clone.borrow();
+            if q.is_empty() {
+                return true;
+            }
+            let Some(it) = obj.downcast_ref::<ProcItem>() else {
+                return true;
+            };
+            let q_lower = q.to_lowercase();
+            it.name().to_lowercase().contains(&q_lower) || it.pid().to_string().contains(&q_lower)
+        });
+        let filter_model = gtk4::FilterListModel::new(Some(fstore.clone()), Some(filter.clone()));
+        filter_model.set_incremental(false);
+
+        assert_eq!(filter_model.n_items(), 3);
+
+        *query.borrow_mut() = "fire".to_string();
+        filter.changed(gtk4::FilterChange::Different);
+        assert_eq!(filter_model.n_items(), 1);
+        let item = filter_model.item(0).unwrap().downcast::<ProcItem>().unwrap();
+        assert_eq!(item.name(), "Firefox");
+
+        *query.borrow_mut() = "200".to_string();
+        filter.changed(gtk4::FilterChange::Different);
+        assert_eq!(filter_model.n_items(), 1);
+        let item = filter_model.item(0).unwrap().downcast::<ProcItem>().unwrap();
+        assert_eq!(item.name(), "Chrome");
+
+        *query.borrow_mut() = "".to_string();
+        filter.changed(gtk4::FilterChange::Different);
+        assert_eq!(filter_model.n_items(), 3);
+    }
 }

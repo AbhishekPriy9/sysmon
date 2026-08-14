@@ -36,14 +36,24 @@ pub fn parse_cpu_line(line: &str) -> Option<(u64, u64)> {
     if name == "cpu" || !name.starts_with("cpu") {
         return None;
     }
-    let vals: Vec<u64> = it.filter_map(|v| v.parse().ok()).collect();
-    if vals.len() < 8 {
+    let mut total = 0u64;
+    let mut idle = 0u64;
+    let mut iowait = 0u64;
+    let mut count = 0;
+    for v_str in it {
+        let val: u64 = v_str.parse().ok()?;
+        total = total.saturating_add(val);
+        if count == 3 {
+            idle = val;
+        } else if count == 4 {
+            iowait = val;
+        }
+        count += 1;
+    }
+    if count < 8 {
         return None;
     }
-    let idle = vals[3];
-    let iowait = vals[4];
-    let total: u64 = vals.iter().sum();
-    Some((total - idle - iowait, total))
+    Some((total.saturating_sub(idle).saturating_sub(iowait), total))
 }
 
 pub fn load_percent(prev: (u64, u64), cur: (u64, u64)) -> f64 {
@@ -88,12 +98,10 @@ pub fn parse_proc_stat(line: &str) -> Option<(String, u64, u64)> {
         return None;
     }
     let name = line[open + 1..close].to_string();
-    let rest: Vec<&str> = line[close + 1..].split_whitespace().collect();
-    if rest.len() < 13 {
-        return None;
-    }
-    let utime: u64 = rest[11].parse().ok()?;
-    let stime: u64 = rest[12].parse().ok()?;
+    let mut rest = line[close + 1..].split_whitespace();
+    // After ')': state is index 0. utime is index 11 (field 14), stime is index 12 (field 15).
+    let utime: u64 = rest.nth(11)?.parse().ok()?;
+    let stime: u64 = rest.next()?.parse().ok()?;
     Some((name, utime, stime))
 }
 

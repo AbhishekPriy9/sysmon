@@ -8,6 +8,16 @@ You need the GTK4 and libadwaita dev packages before anything compiles:
     sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
 The toolchain has to support edition 2024 (see Cargo.toml). `cargo run` opens a GUI, so it needs a real X11/Wayland display and won't run headless.
 
+## Edge cases / robustness
+
+When adding or changing features, handle edge cases explicitly instead of assuming ideal hardware:
+- **Missing / empty / unreadable files**: a `/proc` or `/sys` read that fails must degrade gracefully (show `—` or a safe default), never panic or render `inf`/`NaN`.
+- **Universal hardware support**: don't hardcode one vendor's layout. Read whichever sysfs attribute set a driver exposes (e.g. `charge_*` in µAh vs `energy_*` in µWh) and pick the right unit, so the app runs on any Linux box.
+- **No divide-by-zero**: guard every divisor (`t > 0`, `voltage > 0`, `clk_tck > 0`, RAPL `max > 0`, …) before using it.
+- **Silent failures**: background threads (e.g. the sampler) must not die quietly. Catch panics and surface the error to the UI (a toast) rather than freezing on stale data.
+- **Validate parsed input**: treat parse/format failures as `None`/default; never `unwrap()` a value that depends on external hardware state.
+- Cover the above with inline `#[cfg(test)]` unit tests where practical.
+
 ## Tests
 
 Tests live in inline `#[cfg(test)]` modules and read real /proc and /sys hardware, so they only run on Linux. Two are environment-sensitive and handled gracefully:

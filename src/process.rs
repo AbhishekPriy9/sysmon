@@ -1,5 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 
 use crate::model::{AppRow, ProcRow};
 use crate::read::{parse_proc_stat, parse_statm_rss, process_cpu_percent};
@@ -11,50 +12,78 @@ pub fn scan_processes(
     page_size_kb: u64,
     total_ram_kb: u64,
 ) -> Vec<ProcRow> {
-    let live: Vec<u32> = fs::read_dir("/proc")
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-        .filter_map(|s| s.parse().ok())
-        .collect();
+    let Ok(dir) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
 
-    let mut out = Vec::new();
-    for pid in &live {
-        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+    let mut next_prev = HashMap::with_capacity(prev.len());
+    let mut out = Vec::with_capacity(prev.len());
+
+    let mut stat_buf = String::with_capacity(512);
+    let mut statm_buf = String::with_capacity(128);
+
+    for entry in dir.flatten() {
+        let file_name = entry.file_name();
+        let Some(name_str) = file_name.to_str() else {
             continue;
         };
-        let Some((name, utime, stime)) = parse_proc_stat(&stat) else {
+        if name_str.is_empty() || !name_str.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(pid) = name_str.parse::<u32>() else {
+            continue;
+        };
+
+        // Read /proc/{pid}/stat
+        let stat_path = format!("/proc/{pid}/stat");
+        stat_buf.clear();
+        let Ok(mut stat_file) = fs::File::open(&stat_path) else {
+            continue;
+        };
+        if stat_file.read_to_string(&mut stat_buf).is_err() {
+            continue;
+        }
+
+        let Some((name, utime, stime)) = parse_proc_stat(&stat_buf) else {
             continue;
         };
         let ticks = utime.saturating_add(stime);
-        let cpu_pct = match prev.get(pid) {
-            Some(p) => process_cpu_percent(*p, ticks, dt_sec, clk_tck),
+        let cpu_pct = match prev.get(&pid) {
+            Some(&p) => process_cpu_percent(p, ticks, dt_sec, clk_tck),
             None => 0.0,
         };
-        let rss_kb = fs::read_to_string(format!("/proc/{pid}/statm"))
-            .ok()
-            .and_then(|s| parse_statm_rss(&s, page_size_kb))
-            .unwrap_or(0);
+
+        // Read /proc/{pid}/statm
+        let statm_path = format!("/proc/{pid}/statm");
+        statm_buf.clear();
+        let rss_kb = if let Ok(mut statm_file) = fs::File::open(&statm_path) {
+            if statm_file.read_to_string(&mut statm_buf).is_ok() {
+                parse_statm_rss(&statm_buf, page_size_kb).unwrap_or(0)
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
         let mem_pct = if total_ram_kb == 0 {
             0.0
         } else {
             rss_kb as f64 / total_ram_kb as f64 * 100.0
         };
-        out.push(ProcRow { pid: *pid, name, cpu_pct, mem_pct, rss_kb });
-        prev.insert(*pid, ticks);
+
+        out.push(ProcRow { pid, name, cpu_pct, mem_pct, rss_kb });
+        next_prev.insert(pid, ticks);
     }
 
-    let live_set: HashSet<u32> = live.into_iter().collect();
-    prev.retain(|pid, _| live_set.contains(pid));
+    *prev = next_prev;
     out.sort_by(|a, b| b.cpu_pct.partial_cmp(&a.cpu_pct).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
 pub fn group_apps(procs: &[ProcRow]) -> Vec<AppRow> {
-    let mut map: HashMap<&str, (f64, f64, u64, u32, Vec<u32>)> = HashMap::new();
+    let mut map: HashMap<&str, (f64, f64, u64, u32, Vec<u32>)> =
+        HashMap::with_capacity(procs.len().min(128));
     for p in procs {
         let e = map
             .entry(p.name.as_str())

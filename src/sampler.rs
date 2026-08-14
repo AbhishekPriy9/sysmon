@@ -183,8 +183,8 @@ impl Sampler {
             parsed[idx] = parse_cpu_line(line);
         }
         let mut cores = Vec::with_capacity(self.ncores);
-        for i in 0..self.ncores {
-            let cur = parsed[i];
+        for (i, cur) in parsed.iter().enumerate().take(self.ncores) {
+            let cur = *cur;
             let prev = self.prev_cpu.get(i).copied().unwrap_or((0, 0));
             if let Some(c) = cur {
                 self.prev_cpu[i] = c;
@@ -204,16 +204,43 @@ impl Sampler {
         cores
     }
 
+    /// Read a battery capacity attribute, preferring the charge (µAh) form and
+    /// falling back to the energy (µWh) form. Different drivers expose one or the
+    /// other, so checking both is what makes this work across batteries.
+    fn read_cap(base: &str, name: &str) -> Option<u64> {
+        read_file(&format!("{base}/charge_{name}"))
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .or_else(|| {
+                read_file(&format!("{base}/energy_{name}")).and_then(|s| s.trim().parse::<u64>().ok())
+            })
+    }
+
     fn read_battery(&self) -> Option<Battery> {
         let name = self.battery_name.as_ref()?;
         let base = format!("/sys/class/power_supply/{name}");
         let status = read_file(&format!("{base}/status"))?.trim().to_string();
         let charge_pct = read_file(&format!("{base}/capacity"))
             .and_then(|s| s.trim().parse::<u64>().ok())?;
-        let full = read_file(&format!("{base}/charge_full"))
-            .and_then(|s| s.trim().parse::<u64>().ok())?;
-        let design = read_file(&format!("{base}/charge_full_design"))
-            .and_then(|s| s.trim().parse::<u64>().ok())?;
+        // Batteries expose capacity either as charge (µAh) or energy (µWh).
+        // Read whichever set the driver provides so this works universally.
+        let design = Self::read_cap(&base, "full_design");
+        let full = Self::read_cap(&base, "full");
+        let remaining = Self::read_cap(&base, "now");
+        let capacity_unit = if read_file(&format!("{base}/charge_full")).is_some() {
+            Some("mAh".to_string())
+        } else if read_file(&format!("{base}/energy_full")).is_some() {
+            Some("Wh".to_string())
+        } else {
+            None
+        };
+        // Stable pack voltage (µV) used to convert between charge and energy so both
+        // units can always be shown. Prefer the fixed design max over the live value so
+        // the converted figure doesn't jitter as the battery charges/discharges.
+        let capacity_voltage_uv = read_file(&format!("{base}/voltage_max_design"))
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .or_else(|| {
+                read_file(&format!("{base}/voltage_now")).and_then(|s| s.trim().parse::<u64>().ok())
+            });
         let current_now = read_file(&format!("{base}/current_now"))
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0);
@@ -240,11 +267,16 @@ impl Sampler {
         };
         Some(Battery {
             charge_pct: charge_pct as f64,
-            health_pct: health_pct(full, design),
+            health_pct: health_pct(full.unwrap_or(0), design.unwrap_or(0)),
             watts,
             status,
             cycle_count,
             temp_c,
+            design_capacity: design,
+            full_capacity: full,
+            remaining_capacity: remaining,
+            capacity_unit,
+            capacity_voltage_uv,
         })
     }
 
