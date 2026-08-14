@@ -1,8 +1,9 @@
 # sysmon
 
-A live system monitor for Linux desktops, built with GTK4/libadwaita. It keeps an
-eye on your CPU, battery, memory, and network — plus an apps/processes table —
-refreshed every second.
+A live system monitor for Linux desktops, built with GTK4/libadwaita — highly
+recommended for **Dell laptops with Intel CPUs running a Debian-family distro**.
+It keeps an eye on your CPU, battery, memory, and network — plus an
+apps/processes table — refreshed every second.
 
 ## Features
 
@@ -12,9 +13,21 @@ refreshed every second.
 - Network throughput
 - Apps and processes table with grouping
 
+## Tested hardware
+
+sysmon is developed and verified on:
+
+- **Dell Latitude 5420** — Intel Core i5, 11th gen
+- **Dell Inspiron 15** — Intel Core i5-7200U (7th gen)
+
+Both running Debian-family distros (Debian/Ubuntu). Other distros and hardware
+may work, but aren't validated — CPU temperature, RAPL wattage, and battery
+sensors follow Intel/Dell conventions, so readings are most accurate there.
+
 ## Requirements
 
-- Linux (Debian/Ubuntu recommended)
+- Dell laptop with an Intel CPU — recommended and best tested
+- A Debian-family distro (Debian, Ubuntu, and derivatives) — packaged as `.deb` only
 - A desktop session (X11 or Wayland)
 - Dependencies (GTK4, libadwaita) are installed automatically by apt
 
