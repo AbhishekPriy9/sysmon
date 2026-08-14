@@ -1,62 +1,67 @@
 # sysmon
 
-A Rust + GTK4/libadwaita desktop system monitor for Linux. Single binary, no separate library. Live readout of CPU, battery, memory, network, and an apps/processes table, refreshed every 1 second.
+A live system monitor for Linux desktops, built with GTK4/libadwaita. It keeps an
+eye on your CPU, battery, memory, and network — plus an apps/processes table —
+refreshed every second.
 
 ## Features
 
-- CPU usage per-core, package/core wattage (RAPL), and CPU temperature
+- CPU usage per core, package/core wattage (RAPL), and temperature
 - Battery state and charge
 - Memory usage
 - Network throughput
-- Apps/processes table with grouping
+- Apps and processes table with grouping
 
-## Build prerequisites
+## Requirements
 
-```
-sudo apt-get install -y libgtk-4-dev libadwaita-1-dev pkg-config
-```
+- Linux (Debian/Ubuntu recommended)
+- A desktop session (X11 or Wayland)
+- Dependencies (GTK4, libadwaita) are installed automatically by apt
 
-You also need a recent Rust toolchain (edition 2024).
+## Download & install
 
-## Build & run
-
-```
-cargo build
-cargo run
-```
-
-`cargo run` launches the GUI and requires a display (X11/Wayland session); it will not run headless.
-
-## Tests
-
-Tests are inline `#[cfg(test)]` modules in the source files. They read real Linux hardware files (`/proc`, `/sys`) and are not portable, so they must be run on Linux:
+Download the latest `sysmon_*.deb` from the [releases page](https://github.com/AbhishekPriy9/sysmon/releases), then:
 
 ```
-cargo test
+cd ~/Downloads
+sudo apt install ./sysmon_0.1.1-1_amd64.deb
 ```
 
-## CPU wattage (RAPL) setup
+Use the exact filename you downloaded (the version number changes with each release).
 
-RAPL energy files under `/sys/class/powercap/intel-rapl:0*/energy_uj` are root-only by default, so package/core watts show "no access" until you relax permissions. The shipped rule `data/99-sysmon-rapl.rules` fixes this:
-
-```
-SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0/energy_uj"
-SUBSYSTEM=="powercap", KERNEL=="intel-rapl:0:0", RUN+="/bin/chmod 0444 /sys/class/powercap/intel-rapl:0:0/energy_uj"
-```
-
-Install it once:
+Prefer manual install?
 
 ```
-sudo cp data/99-sysmon-rapl.rules /etc/udev/rules.d/
-sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=powercap
+sudo dpkg -i sysmon_0.1.1-1_amd64.deb
+sudo apt-get install -f   # only if it reports missing dependencies
 ```
 
-Survives reboots. The `.deb` package installs this rule automatically via a `postinst` script.
+`apt install ./…deb` is recommended — it resolves dependencies automatically.
 
-## Packaging
+### Uninstall
 
-`.deb` builds use `cargo-deb`. The package installs the binary, the hicolor icon, the `.desktop` file, and `LICENSE`.
+```
+sudo apt remove sysmon
+```
+
+## Launching
+
+- From your app menu, search for **sysmon**
+- Or from a terminal: `sysmon`
+
+## A note on CPU wattage
+
+Package/core watts come from the Intel RAPL power-cap registers, which Linux locks
+down by default. The package installs a udev rule that grants the app read access
+automatically, so wattage works out of the box. If you ever see "no access" for
+watts, it means that rule isn't active on your system.
 
 ## License
 
-Source-available license (see `LICENSE`). Reading, running, and sharing verbatim copies is permitted; modified redistribution, re-labeling/re-branding, and commercial sale are forbidden.
+Source-available license (see `LICENSE`). Reading, running, and sharing verbatim
+copies is permitted; modified redistribution, re-branding, and sale are forbidden.
+
+## Support
+
+Bugs or feature requests: open an issue at
+https://github.com/AbhishekPriy9/sysmon/issues
